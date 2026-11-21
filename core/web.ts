@@ -69,6 +69,7 @@ export async function startWeb(config: any, services: any, runtime: any) {
     "styles.css",
     "models.css",
     "app.js",
+    "rich.js",
     "api.js",
     "icons.js",
     "models.js",

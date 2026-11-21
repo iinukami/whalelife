@@ -4,6 +4,7 @@
  */
 import { api, escapeHTML as e, availableModels } from "./api.js";
 import { icon, whale } from "./icons.js";
+import { renderRich, detailsState, applyDetailsState, hasVisibleText, avatarLabel } from "./rich.js";
 import { renderModels, bindModels } from "./models.js";
 import { renderPersonas, bindPersonas } from "./personas.js";
 import { renderMemory, bindMemory, loadMemory } from "./memory.js";
@@ -499,7 +500,8 @@ class ConsoleApp {
         return;
       }
       if (data.type === "chunk") {
-        if (!this.reply) {
+        const created = !this.reply;
+        if (created) {
           this.reply = {
             role: "assistant",
             text: "",
@@ -508,7 +510,13 @@ class ConsoleApp {
           this.state.messages.push(this.reply);
         }
         this.reply.text += data.text;
-      } else if (data.type === "done" || data.type === "error") {
+        if (this.state.page === "chat") {
+          if (created) this.renderMessages();
+          else this.updateStreamingReply();
+        }
+        return;
+      }
+      if (data.type === "done" || data.type === "error") {
         if (data.type === "error") {
           this.state.messages.push({ role: "error", text: data.error });
           this.toast(data.error, true);
@@ -631,6 +639,10 @@ class ConsoleApp {
       this.updateChatControls();
     }
   }
+  /** 回复里已经有可见文字，才让它占一个气泡。 */
+  replyVisible() {
+    return hasVisibleText(this.reply && this.reply.text);
+  }
   renderMessages() {
     const personaName = this.state.status.personaName || "助手";
     const box = $("messages");
@@ -639,14 +651,36 @@ class ConsoleApp {
       box.innerHTML = `<div class="chat-empty"><span class="brand-mark">${whale}</span><h3>今天想和${e(personaName)}聊点什么？</h3><p>从一句问候开始，或试试「记下这个」。</p></div>`;
       return;
     }
-    box.innerHTML = this.state.messages
-      .map(
-        (m) =>
-          `<div class="message ${m.role === "user" ? "user" : m.role === "error" ? "error" : ""}"><span class="mini-avatar" title="${e(m.personaName || "助手")}">${m.role === "user" ? "我" : m.role === "error" ? "!" : e((m.personaName || "助手").slice(0, 1))}</span><div class="bubble">${renderRich(m.text)}${m.protocolOriginal ? `<details><summary>查看模型原文</summary><div>${e(m.protocolOriginal)}</div></details>` : ""}${m.protocolNote ? '<div class="protocol-note">上面是模型把工具调用写进正文，已替换为说明，没有执行任何工具。</div>' : ""}</div></div>`,
-      )
-      .join("");
-    if (this.state.chatBusy && !this.reply) box.insertAdjacentHTML("beforeend", `<div class="message"><span class="mini-avatar">勘</span><div class="bubble thinking"><i></i><i></i><i></i><span>思考中 <em class="think-face">${pickThinkingFace()}</em></span></div></div>`);
+    const open = detailsState(box);
+    const parts = [];
+    this.state.messages.forEach((m, index) => {
+      if (m === this.reply && !this.replyVisible()) return;
+      parts.push(
+        `<div class="message ${m.role === "user" ? "user" : m.role === "error" ? "error" : ""}" data-index="${index}"${m === this.reply ? ' data-streaming="1"' : ""}><span class="mini-avatar" title="${e(m.personaName || "助手")}">${m.role === "user" ? "我" : m.role === "error" ? "!" : e(avatarLabel(m.personaName))}</span><div class="bubble">${renderRich(m.text)}${m.protocolOriginal ? `<details><summary>查看模型原文</summary><div>${e(m.protocolOriginal)}</div></details>` : ""}${m.protocolNote ? '<div class="protocol-note">上面是模型把工具调用写进正文，已替换为说明，没有执行任何工具。</div>' : ""}</div></div>`,
+      );
+    });
+    box.innerHTML = parts.join("");
+    applyDetailsState(box, open);
+    if (this.state.chatBusy && !this.replyVisible())
+      box.insertAdjacentHTML(
+        "beforeend",
+        `<div class="message" data-thinking="1"><span class="mini-avatar" title="${e(personaName)}">${e(avatarLabel(personaName))}</span><div class="bubble thinking"><i></i><i></i><i></i><span>思考中 <em class="think-face">${pickThinkingFace()}</em></span></div></div>`,
+      );
     box.scrollTop = box.scrollHeight;
+  }
+  /** 流式分片只重画当前那条回复，旧消息和它们的展开状态都不动。 */
+  updateStreamingReply() {
+    const box = $("messages");
+    if (!box || !this.replyVisible()) return;
+    const bubble = box.querySelector('.message[data-streaming="1"] .bubble');
+    if (!bubble) {
+      this.renderMessages();
+      return;
+    }
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    bubble.innerHTML = renderRich(this.reply.text);
+    box.querySelector('.message[data-thinking="1"]')?.remove();
+    if (nearBottom) box.scrollTop = box.scrollHeight;
   }
   filteredLogs() {
     return this.state.logs.filter(
@@ -674,183 +708,6 @@ class ConsoleApp {
 }
 const thinkingFaces = ["(｡•ᴗ•｡)","(´｡• ᵕ •｡`)","(๑•̀ㅂ•́)و","(￣▽￣)","(＝ω＝)","(っ˘ω˘ς)","(๑´ω`๑)","(・ω・)","(๑•́ ₃ •̀๑)","( ˘ω˘ )","(´▽`)","(･ω･)ﾉ"];
 const pickThinkingFace = () => thinkingFaces[Math.floor(Math.random() * thinkingFaces.length)];
-
-const TABLE_SEPARATOR = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
-const CODE_FENCE = /^\s*```/;
-const HEADING = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
-const HR = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
-const QUOTE = /^\s{0,3}>\s?(.*)$/;
-const UL_ITEM = /^(\s*)[-*+]\s+(.*)$/;
-const OL_ITEM = /^(\s*)(\d{1,9})[.)]\s+(.*)$/;
-const LINK = /\[([^\]\n]*)\]\(([^()\s]*)\)/g;
-const SAFE_URL = /^(https?:\/\/|mailto:|\/|#|\.{1,2}\/)/i;
-
-/** 行内语法：行内代码 / 链接 / 粗体 / 删除线 / 斜体。入参必须已经过转义。 */
-function inlineRich(escaped) {
-  return escaped
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(LINK, (whole, label, url) => {
-      const target = url.replace(/&amp;/g, "&").trim();
-      if (!SAFE_URL.test(target)) return whole;
-      return `<a href="${target}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-    })
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
-    .replace(/(^|[\s(（])_([^_\n]+)_(?=[\s)）.。，,！!？?]|$)/g, "$1<em>$2</em>");
-}
-
-function splitTableRow(line) {
-  let body = line.trim();
-  if (body.startsWith("|")) body = body.slice(1);
-  if (body.endsWith("|")) body = body.slice(0, -1);
-  return body.split("|").map((cell) => cell.trim());
-}
-
-function renderTable(header, aligns, rows) {
-  const cell = (tag, text, index) => {
-    const align = aligns[index];
-    return `<${tag}${align ? ` style="text-align:${align}"` : ""}>${inlineRich(e(text))}</${tag}>`;
-  };
-  const head = `<thead><tr>${header.map((text, index) => cell("th", text, index)).join("")}</tr></thead>`;
-  const body = rows
-    .map((row) => `<tr>${header.map((_, index) => cell("td", row[index] ?? "", index)).join("")}</tr>`)
-    .join("");
-  return `<div class="md-table"><table>${head}<tbody>${body}</tbody></table></div>`;
-}
-
-/** 列表：按缩进决定嵌套层级，<ul>/<ol> 由相邻项的有序性切换。 */
-function renderListBlock(items) {
-  let html = "";
-  const stack = [];
-  for (const item of items) {
-    const tag = item.ordered ? "ol" : "ul";
-    while (stack.length && item.indent < stack[stack.length - 1].indent) {
-      html += `</li></${stack.pop().tag}>`;
-    }
-    const top = stack[stack.length - 1];
-    if (!top || item.indent > top.indent) {
-      const start = item.ordered && item.start !== 1 ? ` start="${item.start}"` : "";
-      html += `<${tag}${start}>`;
-      stack.push({ tag, indent: item.indent });
-    } else if (top.tag !== tag) {
-      html += `</li></${stack.pop().tag}><${tag}>`;
-      stack.push({ tag, indent: item.indent });
-    } else {
-      html += "</li>";
-    }
-    html += `<li>${inlineRich(e(item.text))}`;
-  }
-  while (stack.length) html += `</li></${stack.pop().tag}>`;
-  return html;
-}
-
-/** 块级：代码围栏、GFM 表格、标题、分割线、引用、列表；其余文字按整段转义。 */
-/** 回复末尾「本轮文件」：只列文件名和打开入口；核验没过就写原因，不给链接。 */
-function renderRich(text) {
-  const lines = String(text).split("\n");
-  const out = [];
-  let buffer = [];
-  const flush = () => {
-    if (!buffer.length) return;
-    out.push(inlineRich(e(buffer.join("\n"))));
-    buffer = [];
-  };
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const next = lines[i + 1];
-
-    if (CODE_FENCE.test(line)) {
-      flush();
-      const lang = line.trim().slice(3).trim();
-      const code = [];
-      i += 1;
-      while (i < lines.length && !CODE_FENCE.test(lines[i])) {
-        code.push(lines[i]);
-        i += 1;
-      }
-      const cls = lang ? ` class="lang-${e(lang)}"` : "";
-      out.push(`<pre class="md-pre"><code${cls}>${e(code.join("\n"))}</code></pre>`);
-      continue;
-    }
-
-    if (line.includes("|") && next !== undefined && next.includes("-") && TABLE_SEPARATOR.test(next)) {
-      flush();
-      const header = splitTableRow(line);
-      const aligns = splitTableRow(next).map((mark) => {
-        const left = mark.startsWith(":");
-        const right = mark.endsWith(":");
-        if (left && right) return "center";
-        if (right) return "right";
-        if (left) return "left";
-        return "";
-      });
-      const rows = [];
-      i += 2;
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
-        rows.push(splitTableRow(lines[i]));
-        i += 1;
-      }
-      i -= 1;
-      out.push(renderTable(header, aligns, rows));
-      continue;
-    }
-
-    const heading = HEADING.exec(line);
-    if (heading) {
-      flush();
-      const level = Math.min(6, Math.max(3, heading[1].length + 1));
-      out.push(`<h${level}>${inlineRich(e(heading[2]))}</h${level}>`);
-      continue;
-    }
-
-    if (HR.test(line)) {
-      flush();
-      out.push("<hr>");
-      continue;
-    }
-
-    if (QUOTE.test(line)) {
-      flush();
-      const parts = [];
-      while (i < lines.length && QUOTE.test(lines[i])) {
-        parts.push(QUOTE.exec(lines[i])[1]);
-        i += 1;
-      }
-      i -= 1;
-      out.push(`<blockquote>${inlineRich(e(parts.join("\n")))}</blockquote>`);
-      continue;
-    }
-
-    const ulItem = UL_ITEM.exec(line);
-    const olItem = OL_ITEM.exec(line);
-    if (ulItem || olItem) {
-      flush();
-      const items = [];
-      while (i < lines.length) {
-        const ul = UL_ITEM.exec(lines[i]);
-        const ol = OL_ITEM.exec(lines[i]);
-        const m = ul || ol;
-        if (!m) break;
-        items.push({
-          indent: (ul ? m[1] : m[1]).replace(/\t/g, "  ").length,
-          ordered: Boolean(ol),
-          start: ol ? Number(ol[2]) : 1,
-          text: ul ? ul[2] : ol[3],
-        });
-        i += 1;
-      }
-      i -= 1;
-      out.push(renderListBlock(items));
-      continue;
-    }
-
-    buffer.push(line);
-  }
-  flush();
-  return out.join("\n");
-}
-
 
 /** 每条回复旁的「念」按钮：交给嘴巴插件合成并播放。 */
 
