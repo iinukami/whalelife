@@ -62,7 +62,7 @@ async function fixture(t: TestContext) {
       localStorage: { whaleSession: legacyId }, location: { hash: "#chat" },
       document: { getElementById: () => node, querySelectorAll: () => [] },
       window: { addEventListener() {} } };
-    for (const file of ["views", "memory", "personas", "models", "plugin-store", "host-updates"])
+    for (const file of ["views", "memory", "personas", "models", "plugin-store", "host-updates", "rich"])
       Object.assign(sandbox, await import(new URL(`../core/ui/${file}.js`, import.meta.url).href));
     runInNewContext(source, sandbox);
     const ui = sandbox.consoleApp;

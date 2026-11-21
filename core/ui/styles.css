@@ -2086,3 +2086,131 @@ dialog::backdrop {
 }
 .extension-panel { overflow: hidden; min-height: 480px; }
 .extension-frame { display: block; width: 100%; height: max(480px, calc(100dvh - 230px)); border: 0; background: white; }
+
+/* 思考中提示 */
+.bubble.thinking { display: inline-flex; align-items: center; gap: 5px; color: #8a8f98; letter-spacing: 0.02em; }
+.bubble.thinking i { font-style: normal; animation: think-dot 1.2s infinite ease-in-out; }
+.bubble.thinking i:nth-child(2) { animation-delay: 0.15s; }
+.bubble.thinking i:nth-child(3) { animation-delay: 0.3s; }
+.bubble.thinking span { margin-left: 4px; animation: think-fade 1.8s infinite ease-in-out; }
+.bubble.thinking em.think-face { font-style: normal; letter-spacing: 0; margin-left: 2px; }
+@keyframes think-dot { 0%, 60%, 100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-2px); } }
+@keyframes think-fade { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+/* 对话里的表格：无外框，只有横线；表头浅灰，数字列用等宽数字方便对齐 */
+.message .bubble .md-table {
+  white-space: normal;
+  margin: 8px 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.message .bubble .md-table table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.message .bubble .md-table th,
+.message .bubble .md-table td {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 14px 7px 0;
+  vertical-align: top;
+  text-align: left;
+}
+.message .bubble .md-table th:last-child,
+.message .bubble .md-table td:last-child { padding-right: 0; }
+.message .bubble .md-table th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 11.5px;
+  white-space: nowrap;
+  border-bottom-color: #dfe2ea;
+}
+.message .bubble .md-table tbody tr:last-child td { border-bottom: 0; }
+.message .bubble .md-table th[style*="right"],
+.message .bubble .md-table td[style*="right"] { font-variant-numeric: tabular-nums; }
+.message .bubble .md-table td:first-child { white-space: normal; }
+@media (max-width: 720px) {
+  .message .bubble .md-table table { font-size: 12px; }
+  .message .bubble .md-table th,
+  .message .bubble .md-table td { padding: 6px 9px 6px 0; }
+}
+
+/* 行内语法：粗体 / 行内代码 / 删除线 —— 勘 20261116 */
+.message .bubble strong {
+  font-weight: 650;
+  color: var(--ink);
+}
+.message .bubble code {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.055);
+  border: 1px solid rgba(0, 0, 0, 0.04);
+}
+.message .bubble del {
+  color: var(--muted);
+  text-decoration-thickness: 1px;
+}
+
+/* 块级排版：标题 / 列表 / 引用 / 分割线 / 代码围栏 / 链接 / 斜体 */
+.message .bubble h3,
+.message .bubble h4,
+.message .bubble h5,
+.message .bubble h6 {
+  margin: 12px 0 6px;
+  line-height: 1.35;
+  color: var(--ink);
+  font-weight: 650;
+}
+.message .bubble h3 { font-size: 1.08em; }
+.message .bubble h4 { font-size: 1.02em; }
+.message .bubble h5,
+.message .bubble h6 { font-size: 0.98em; color: var(--muted); }
+.message .bubble > :first-child,
+.message .bubble .md-table + p { margin-top: 0; }
+.message .bubble ul,
+.message .bubble ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.message .bubble ul { list-style: disc; }
+.message .bubble ol { list-style: decimal; }
+.message .bubble ul ul { list-style: circle; margin: 3px 0; }
+.message .bubble li { margin: 2px 0; }
+.message .bubble li > ul,
+.message .bubble li > ol { margin: 3px 0 0; }
+.message .bubble blockquote {
+  margin: 8px 0;
+  padding: 2px 0 2px 11px;
+  border-left: 2px solid var(--line, rgba(0, 0, 0, 0.14));
+  color: var(--muted);
+}
+.message .bubble hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--line, rgba(0, 0, 0, 0.12));
+}
+.message .bubble a {
+  color: var(--accent, #2563eb);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.message .bubble em { font-style: italic; }
+.message .bubble .md-pre {
+  margin: 8px 0;
+  padding: 9px 11px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.045);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  overflow-x: auto;
+}
+.message .bubble .md-pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.9em;
+  line-height: 1.5;
+  white-space: pre;
+}

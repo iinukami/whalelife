@@ -4,6 +4,7 @@
  */
 import { api, escapeHTML as e, availableModels } from "./api.js";
 import { icon, whale } from "./icons.js";
+import { renderRich, detailsState, applyDetailsState, hasVisibleText, avatarLabel } from "./rich.js";
 import { renderModels, bindModels } from "./models.js";
 import { renderPersonas, bindPersonas } from "./personas.js";
 import { renderMemory, bindMemory, loadMemory } from "./memory.js";
@@ -499,7 +500,8 @@ class ConsoleApp {
         return;
       }
       if (data.type === "chunk") {
-        if (!this.reply) {
+        const created = !this.reply;
+        if (created) {
           this.reply = {
             role: "assistant",
             text: "",
@@ -508,7 +510,13 @@ class ConsoleApp {
           this.state.messages.push(this.reply);
         }
         this.reply.text += data.text;
-      } else if (data.type === "done" || data.type === "error") {
+        if (this.state.page === "chat") {
+          if (created) this.renderMessages();
+          else this.updateStreamingReply();
+        }
+        return;
+      }
+      if (data.type === "done" || data.type === "error") {
         if (data.type === "error") {
           this.state.messages.push({ role: "error", text: data.error });
           this.toast(data.error, true);
@@ -631,6 +639,10 @@ class ConsoleApp {
       this.updateChatControls();
     }
   }
+  /** 回复里已经有可见文字，才让它占一个气泡。 */
+  replyVisible() {
+    return hasVisibleText(this.reply && this.reply.text);
+  }
   renderMessages() {
     const personaName = this.state.status.personaName || "助手";
     const box = $("messages");
@@ -639,13 +651,36 @@ class ConsoleApp {
       box.innerHTML = `<div class="chat-empty"><span class="brand-mark">${whale}</span><h3>今天想和${e(personaName)}聊点什么？</h3><p>从一句问候开始，或试试「记下这个」。</p></div>`;
       return;
     }
-    box.innerHTML = this.state.messages
-      .map(
-        (m) =>
-          `<div class="message ${m.role === "user" ? "user" : m.role === "error" ? "error" : ""}"><span class="mini-avatar" title="${e(m.personaName || "助手")}">${m.role === "user" ? "你" : m.role === "error" ? "!" : e((m.personaName || "助手").slice(0, 1))}</span><div class="bubble">${e(m.text)}${m.protocolOriginal ? `<details><summary>查看模型原文</summary><div>${e(m.protocolOriginal)}</div></details>` : ""}</div></div>`,
-      )
-      .join("");
+    const open = detailsState(box);
+    const parts = [];
+    this.state.messages.forEach((m, index) => {
+      if (m === this.reply && !this.replyVisible()) return;
+      parts.push(
+        `<div class="message ${m.role === "user" ? "user" : m.role === "error" ? "error" : ""}" data-index="${index}"${m === this.reply ? ' data-streaming="1"' : ""}><span class="mini-avatar" title="${e(m.personaName || "助手")}">${m.role === "user" ? "我" : m.role === "error" ? "!" : e(avatarLabel(m.personaName))}</span><div class="bubble">${renderRich(m.text)}${m.protocolOriginal ? `<details><summary>查看模型原文</summary><div>${e(m.protocolOriginal)}</div></details>` : ""}${m.protocolNote ? '<div class="protocol-note">上面是模型把工具调用写进正文，已替换为说明，没有执行任何工具。</div>' : ""}</div></div>`,
+      );
+    });
+    box.innerHTML = parts.join("");
+    applyDetailsState(box, open);
+    if (this.state.chatBusy && !this.replyVisible())
+      box.insertAdjacentHTML(
+        "beforeend",
+        `<div class="message" data-thinking="1"><span class="mini-avatar" title="${e(personaName)}">${e(avatarLabel(personaName))}</span><div class="bubble thinking"><i></i><i></i><i></i><span>思考中 <em class="think-face">${pickThinkingFace()}</em></span></div></div>`,
+      );
     box.scrollTop = box.scrollHeight;
+  }
+  /** 流式分片只重画当前那条回复，旧消息和它们的展开状态都不动。 */
+  updateStreamingReply() {
+    const box = $("messages");
+    if (!box || !this.replyVisible()) return;
+    const bubble = box.querySelector('.message[data-streaming="1"] .bubble');
+    if (!bubble) {
+      this.renderMessages();
+      return;
+    }
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    bubble.innerHTML = renderRich(this.reply.text);
+    box.querySelector('.message[data-thinking="1"]')?.remove();
+    if (nearBottom) box.scrollTop = box.scrollHeight;
   }
   filteredLogs() {
     return this.state.logs.filter(
@@ -671,5 +706,10 @@ class ConsoleApp {
       `显示 ${lines.length} / ${this.state.logs.length} 条 · ${this.logConnected ? "实时推送中" : "正在重新连接"}`;
   }
 }
+const thinkingFaces = ["(｡•ᴗ•｡)","(´｡• ᵕ •｡`)","(๑•̀ㅂ•́)و","(￣▽￣)","(＝ω＝)","(っ˘ω˘ς)","(๑´ω`๑)","(・ω・)","(๑•́ ₃ •̀๑)","( ˘ω˘ )","(´▽`)","(･ω･)ﾉ"];
+const pickThinkingFace = () => thinkingFaces[Math.floor(Math.random() * thinkingFaces.length)];
+
+/** 每条回复旁的「念」按钮：交给嘴巴插件合成并播放。 */
+
 const app = new ConsoleApp();
 app.start();
