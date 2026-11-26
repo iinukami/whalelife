@@ -669,19 +669,19 @@ export class Channels {
     groups.set(groupKey, { fingerprint, promise });
     return promise;
   }
-  private generate(id: string, text: string, route: ChannelRoute, onChunk: (text: string) => void = () => {}, onContext?: (value: any) => void, expectedPersona?: string, input?: TurnInput) {
+  private generate(id: string, text: string, route: ChannelRoute, onChunk: (text: string) => void = () => {}, onContext?: (value: any) => void, expectedPersona?: string, images?: { mimeType: string; data: Uint8Array }[], input?: TurnInput) {
     route.signal?.throwIfAborted();
     return this.sessions.chat(id, text, onChunk, onContext, expectedPersona, route, false, { wait: true,
-      onWaiting: () => onContext?.({ queued: true }) }, input);
+      onWaiting: () => onContext?.({ queued: true }) }, images, input);
   }
   /** Web keeps its explicit session and streaming protocol, sharing the trusted dispatch path. */
-  web(id: string, text: string, onChunk: (text: string) => void, onContext?: (value: any) => void, expectedPersona?: string, input?: TurnInput) {
+  web(id: string, text: string, onChunk: (text: string) => void, onContext?: (value: any) => void, expectedPersona?: string, images?: { mimeType: string; data: Uint8Array }[], input?: TurnInput) {
     if (this.closing) throw Error("渠道服务已关闭");
     safeId(id);
     const signal = input ? AbortSignal.any([this.controller.signal, input.signal]) : this.controller.signal;
     return this.watch(this.generate(id, text, { channel: "web", account: "local", peer: id, signal,
       origin: { plugin: "core", channel: "web", platform: "控制台" },
-      ...this.policy({ id: "web", account: "local" }) }, onChunk, onContext, expectedPersona, input));
+      ...this.policy({ id: "web", account: "local" }) }, onChunk, onContext, expectedPersona, images, input));
   }
   register(adapter: ChannelAdapter, owner = "core"): ChannelHandle {
     if (this.closing) throw Error("渠道服务已关闭");

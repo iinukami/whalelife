@@ -32,6 +32,8 @@ import {
   requestUsage,
   memoryWindow,
 } from "./session-context.ts";
+/** 本轮图片总量上下限：超过 soft 降 detail，超过 total 直接拒。 */
+const IMAGE_LIMITS = Object.freeze({ softBytes: 8 * 1024 * 1024, totalBytes: 16 * 1024 * 1024 });
 export class Sessions {
   memoryMaintenance = false;
   blockedSessions = new Set<string>();
@@ -254,10 +256,11 @@ export class Sessions {
     route?: ChannelRoute,
     transient = false,
     queue?: QueuePolicy,
+    images?: { mimeType: string; data: Uint8Array }[],
     input?: TurnInput,
   ) {
     const captured = this.captureRoute(id, route);
-    return this.dispatch(id, captured.signal, () => this.runChat(id, text, onChunk, captured.signal!, onContext, expectedPersona, captured, transient, { transient: false }, input), queue);
+    return this.dispatch(id, captured.signal, () => this.runChat(id, text, onChunk, captured.signal!, onContext, expectedPersona, captured, transient, { transient: false }, input, images), queue);
   }
   /** Capture arrival metadata before any asynchronous routing or queue wait. */
   async outgoingIdentity(id: string, route: ChannelRoute) {
@@ -299,6 +302,7 @@ export class Sessions {
     transient = false,
     turn: ToolTurn = { transient: false },
     input?: TurnInput,
+    images?: { mimeType: string; data: Uint8Array }[],
   ) {
     signal.throwIfAborted();
     if (this.memoryMaintenance) throw Error("记忆恢复中，请稍后重试");
@@ -449,7 +453,11 @@ export class Sessions {
         revision: p.revision.slice(0, 12),
         contextReset,
       });
+      // appendEvent 不是原子的：JSONL 追加成功、随后的 index/session 元数据写失败也会抛。
+      // 用固定 id 才能在该情况下回读核对——「不确定」按已落库处理，宁可留孤儿图也不断链。
+      const userEventId = randomUUID();
       const userRow = {
+        id: userEventId,
         type: "message",
         ...source,
         ...(route?.senderProfile ? { senderProfile: route.senderProfile } : {}),
@@ -460,7 +468,25 @@ export class Sessions {
         ts: receivedAt,
         ...context,
       };
-      if (!transient) await memory.appendEvent(userRow);
+      if (!transient) {
+        try {
+          await memory.appendEvent(userRow);
+          // 落库之后再失败，历史里那行 [[img:]] 还指着图，外面不许擦。
+          input?.markPersisted(input.messageId);
+        } catch (error) {
+            // 回读本身也可能抛、可能给回非数组、行里可能带 null。判不清一律按「可能已落库」处理：
+            // 宁可留下没人引用的孤儿图，也不能让历史里那行 [[img:]] 指向不存在的文件。
+            let verdict: "kept" | "absent" | "unknown" = "unknown";
+            try {
+              const rows = await memory.readSession(id);
+              if (Array.isArray(rows) && rows.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
+                verdict = rows.some((row) => row.id === userEventId) ? "kept" : "absent";
+              }
+            } catch { verdict = "unknown"; }
+            if (verdict !== "absent") input?.protectUploads();
+          throw error;
+        }
+      }
       const currentText = transient ? text : speakerText(speakerOf(userRow), text);
       const cfg = { ...this.config.memory, ...policy };
       const allFacts = policy.include_facts ? [...new Set<string>(await memory.readFacts())] : [];
@@ -506,18 +532,26 @@ export class Sessions {
       const requestBudget = limit.tokens ? Math.max(1, limit.tokens - reserve) : Infinity;
       const stablePrefix = !legacy && (supportsContextPrefix(p.provider) ||
         (policy.history_enabled && p.provider.cache_prefix_optimized === true));
+      // 图片只在真正发请求时展开；估算与预算一路走占位文本，不会被 base64 撑爆。
+      const imageBytes = (images ?? []).reduce((sum, image) => sum + image.data.byteLength, 0);
+      if (imageBytes > IMAGE_LIMITS.totalBytes)
+        throw Error("本轮图片合计 " + (imageBytes / 1048576).toFixed(1) + "MiB，超过 16MiB 上限，请分几次发或先压缩");
+      const imageDetail: "auto" | "low" = imageBytes > IMAGE_LIMITS.softBytes ? "low" : "auto";
+      const imageContent = (value: string): any => !images?.length ? value
+        : [{ type: "text", text: value }, ...images.map((image) => ({ type: "image_url",
+            image_url: { url: "data:" + image.mimeType + ";base64," + Buffer.from(image.data).toString("base64"), detail: imageDetail } }))];
       const assemble = (rows = recent, compressed = shortSummary) => {
         const frame = contextFrame(materials(compressed), rows, historyReference, timing(), stablePrefix);
         frame.messages.push(transient
           ? { role: "user", content: "【本轮插件临时输入，不是真人发言，不作为经历保存】\n来源：" + JSON.stringify(source.origin) + "\n" + text }
-          : { role: "user", content: currentText });
+          : { role: "user", content: imageContent(currentText) });
         return frame;
       };
       const assembled = (rows = recent, compressed = shortSummary) => assemble(rows, compressed).messages;
       const capacity = (compressed = shortSummary) => Math.min(
         budget - estimateTokens(summary + compressed + (summary ? originNote(summaryOrigin) + summaryTime(summaryOrigin, zone) : "") +
           (compressed ? originNote(short.checkpoint) + summaryTime(short.checkpoint, zone) : "") + facts.join("\n") + JSON.stringify(snippets)),
-        requestBudget - estimateTokens(JSON.stringify(assembled([], compressed)) + JSON.stringify(toolList)),
+        requestBudget - estimateTokens(promptText(assembled([], compressed)) + JSON.stringify(toolList)),
       );
       let recentTokens = tail(recent, Infinity).tokens;
       const overBudget = () => recentTokens > capacity();

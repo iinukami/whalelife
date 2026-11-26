@@ -4,12 +4,16 @@
  */
 import { createServer } from "node:http";
 import { clock, timezone } from "./time.ts";
-import { readFile } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { resolve as resolvePath, sep as pathSep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { Channels } from "./channels.ts";
 import { TurnInput } from "./turn-input.ts";
 import { conversationRows } from "./channel-history.ts";
+import { toolContentSnapshot } from "./tool-content.ts";
 import { PluginWebRegistry } from "./plugin-web.ts";
 import { WebClientDisconnectedError } from "./web-errors.ts";
 import { OfficialPlugins } from "./official-plugins.ts";
@@ -33,6 +37,8 @@ const marketFiles = new Map([
   ["assets/whale.svg", "image/svg+xml"],
 ]);
 
+const directoryPrefix = (path: string) => path.endsWith(pathSep) ? path : path + pathSep;
+
 export async function startWeb(config: any, services: any, runtime: any) {
   const { logger, memory, sessions } = services;
   const channels = services.channels ?? new Channels(memory, sessions, config);
@@ -48,6 +54,61 @@ export async function startWeb(config: any, services: any, runtime: any) {
   // 本轮输入信箱：本轮还在跑时网页端可以往里塞话，等下一次请求模型前生效。
   // 按「轮」存，不按会话：两个窗口同时跑同一会话时，A 的补充不会落进 B 的回合。
   const webInboxes = new Map<string, TurnInput>();
+  // 网页图片上传：一次最多 4 张、单张 4MiB、合计 16MiB，落盘后只在历史里留路径。
+  const uploadLimit = Object.freeze({ images: 4, imageBytes: 4 * 1024 * 1024, totalBytes: 16 * 1024 * 1024 });
+  const saveUploads = async (id: unknown, value: unknown) => {
+    if (value === undefined || value === null) return [] as { path: string; mimeType: string; data: Buffer }[];
+    if (!Array.isArray(value)) throw Error("图片列表格式无效");
+    if (!value.length) return [];
+    if (value.length > uploadLimit.images) throw Error("一次最多发送 " + uploadLimit.images + " 张图片");
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(id)) throw Error("会话 ID 无效");
+    const sessionId = id;
+    const parts: { type: "image"; mimeType: string; data: Buffer }[] = [];
+    for (const item of value) {
+      if (!item || typeof item.mimeType !== "string" || typeof item.data !== "string")
+        throw Error("图片格式无效");
+      if (!["image/png", "image/jpeg", "image/webp"].includes(item.mimeType))
+        throw Error("只支持 PNG、JPEG、WebP 图片");
+      if (item.data.length > Math.ceil(uploadLimit.imageBytes / 3) * 4)
+        throw Error("单张图片需在 4MiB 以内");
+      const decoded = Buffer.from(item.data, "base64");
+      if (decoded.toString("base64") !== item.data) throw Error("图片 base64 格式无效");
+      if (!decoded.byteLength || decoded.byteLength > uploadLimit.imageBytes)
+        throw Error("单张图片需在 4MiB 以内");
+      parts.push({ type: "image", mimeType: item.mimeType, data: decoded });
+    }
+    if (parts.reduce((sum, part) => sum + part.data.byteLength, 0) > uploadLimit.totalBytes)
+      throw Error("图片合计需在 16MiB 以内");
+    // 复用工具多媒体的签名校验：MIME 与文件头必须对得上。
+    const checked = toolContentSnapshot(parts);
+    const dir = resolvePath("memory", "uploads", sessionId);
+    await mkdir(dir, { recursive: true });
+    const batch = Date.now() + "-" + randomBytes(16).toString("hex");
+    const saved: { path: string; mimeType: string; data: Buffer }[] = [];
+    try {
+      for (const [index, part] of checked.entries()) {
+        if (part.type !== "image") continue;
+        const ext = part.mimeType === "image/png" ? "png" : part.mimeType === "image/jpeg" ? "jpg" : "webp";
+        const name = batch + "-" + (index + 1) + "." + ext;
+        const bytes = Buffer.from(part.data);
+        const file = await open(resolvePath(dir, name), "wx");
+        saved.push({ path: "memory/uploads/" + sessionId + "/" + name, mimeType: part.mimeType, data: bytes });
+        try {
+          await file.writeFile(bytes);
+        } finally {
+          await file.close();
+        }
+      }
+    } catch (error) {
+      // 只回收本批独占创建的文件，包括当前写到一半或关闭失败的文件。
+      await Promise.all(saved.map((item) => rm(resolvePath(item.path), { force: true }).catch((problem) => {
+        logger.warn("回收未完成的上传图片失败", { path: item.path, error: problem });
+      })));
+      throw error;
+    }
+    return saved;
+  };
+
   const reviewedPackages = async () => {
     try {
       lastCommunityReviews = await readPublishedCommunityReviews(lifetime.signal);
@@ -200,7 +261,7 @@ export async function startWeb(config: any, services: any, runtime: any) {
           "Cache-Control": "no-store",
           "X-Frame-Options": "DENY",
           "Content-Security-Policy":
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://raw.githubusercontent.com/iinukami/whalelife/main/market/assets/community-icons/; connect-src 'self' https://raw.githubusercontent.com/iinukami/whalelife/main/market/catalog.json; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://raw.githubusercontent.com/iinukami/whalelife/main/market/assets/community-icons/; connect-src 'self' https://raw.githubusercontent.com/iinukami/whalelife/main/market/catalog.json; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'",
         });
         res.end(await readFile(new URL("./ui/index.html", import.meta.url)));
         return;
@@ -596,6 +657,117 @@ export async function startWeb(config: any, services: any, runtime: any) {
           pluginPages: routes.pages(),
           diagnostics: services.diagnostics?.status(),
         });
+      if (req.method === "POST" && req.url === "/api/clipboard-image") {
+        if (process.platform !== "win32")
+          return send(501, { error: "当前服务端系统不支持读取系统剪贴板，请直接选择图片" });
+        // 粘贴兜底：Chromium 常常解不开微信截图那种裸 DIB，回头问 Windows 要位图。
+        const script = fileURLToPath(
+          new URL("./clipboard-image.ps1", import.meta.url),
+        );
+        const text = await new Promise<string>((done, fail) => {
+          execFile(
+            "powershell",
+            ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script],
+            { timeout: 15000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+            (error: any, stdout: string) => {
+              if (error && !stdout) return fail(error);
+              done(String(stdout ?? "").trim());
+            },
+          );
+        });
+        if (text === "NOIMAGE")
+          return send(409, { error: "系统剪贴板里没有图片" });
+        if (!text || text.startsWith("ERROR:"))
+          return send(500, { error: "读取系统剪贴板失败" });
+        return send(200, { dataUrl: "data:image/png;base64," + text });
+      }
+      if (req.method === "GET" && memoryUrl.pathname === "/api/media") {
+        // 历史里的 [[img:路径]] 靠这里取图：只给允许根目录下的图片与语音。
+        const raw = memoryUrl.searchParams.get("path") ?? "";
+        if (!raw) return send(400, { error: "缺少 path" });
+        const target = resolvePath(raw);
+        const roots = [
+          resolvePath("memory"),
+          resolvePath("plugins"),
+          ...((config.web?.media_roots ?? []) as string[]).map((x) => resolvePath(x)),
+        ];
+        const allowed = roots.some((r) => target === r || target.startsWith(directoryPrefix(r)));
+        if (!allowed) return send(403, { error: "路径不在允许范围" });
+        // 上面只是字符串比较：符号链接和 junction 能把路径指到根之外。按真实路径再判一次。
+        let real: string;
+        try {
+          real = await realpath(target);
+        } catch {
+          return send(404, { error: "文件不存在" });
+        }
+        const realRoots = await Promise.all(
+          roots.map(async (root) => {
+            try {
+              return await realpath(root);
+            } catch {
+              return undefined;
+            }
+          }),
+        );
+        if (!realRoots.some((r) => r !== undefined && (real === r || real.startsWith(directoryPrefix(r)))))
+          return send(403, { error: "路径不在允许范围" });
+        const ext = real.slice(real.lastIndexOf(".")).toLowerCase();
+        const types: Record<string, string> = {
+          ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+          ".gif": "image/gif", ".webp": "image/webp",
+          ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+        };
+        const type = types[ext];
+        if (!type) return send(415, { error: "不支持的文件类型" });
+        try {
+          const buf = await readFile(real);
+          res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+          res.end(buf);
+        } catch {
+          send(404, { error: "文件不存在" });
+        }
+        return;
+      }
+      if (req.method === "GET" && memoryUrl.pathname === "/api/file") {
+        // 回复末尾「本轮文件」的打开入口：只读工作目录里的普通文件，隐藏目录和密钥文件一律不给。
+        const raw = memoryUrl.searchParams.get("path") ?? "";
+        if (!raw) return send(400, { error: "缺少 path" });
+        const base = await realpath(resolvePath(".")).catch(() => resolvePath("."));
+        let target: string;
+        try {
+          // 真实路径：顺带把大小写、尾随点与空格、8.3 短名、符号链接都归一掉，
+          // 后面那些按目录名与文件名的黑名单才有意义。
+          target = await realpath(resolvePath(raw));
+        } catch {
+          return send(404, { error: "文件不存在或读不到" });
+        }
+        const prefix = directoryPrefix(base);
+        if (target === base || !target.startsWith(prefix))
+          return send(403, { error: "路径不在工作目录内" });
+        const relative = target.slice(prefix.length).split(pathSep).join("/");
+        const segments = relative.split("/");
+        if (!relative || segments.some((seg: string) => seg.startsWith(".") || seg === "node_modules"))
+          return send(403, { error: "这个路径不允许打开" });
+        if (/^(config|credentials?|secrets?)\.json$/i.test(segments[segments.length - 1] ?? ""))
+          return send(403, { error: "sensitive config file blocked" });
+        if (/\.(env|key|pem|p12)$/i.test(relative))
+          return send(403, { error: "这个文件不允许打开" });
+        try {
+          const buf = await readFile(target);
+          const text = /\.(md|markdown|patch|diff|txt|ts|tsx|js|mjs|cjs|json|css|html|py|yml|yaml|toml|sh|ps1|log|csv)$/i.test(relative);
+          const name = segments[segments.length - 1] ?? "file";
+          res.writeHead(200, {
+            "Content-Type": text ? "text/plain; charset=utf-8" : "application/octet-stream",
+            "Content-Disposition": (text ? "inline" : "attachment") + "; filename*=UTF-8''" + encodeURIComponent(name),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          });
+          res.end(buf);
+        } catch {
+          send(404, { error: "文件不存在或读不到" });
+        }
+        return;
+      }
       if (req.method === "GET" && req.url === "/api/logs")
         return send(200, logger.lines);
       if (req.method === "POST" && req.url === "/api/plugin") {
@@ -625,7 +797,7 @@ export async function startWeb(config: any, services: any, runtime: any) {
       else res.end();
     }
   });
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 65536 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
     if (
       services.hostStarting?.() || !allowedOrigin(req) ||
@@ -710,30 +882,54 @@ export async function startWeb(config: any, services: any, runtime: any) {
         if (data.expectedSession !== undefined &&
           (data.session !== data.expectedSession || data.expectedSession !== await sessions.current({}, lifetime.signal)))
           throw Error("当前会话已在其他窗口切换，请刷新后重试");
-        const typed = String(data.text ?? "");
-        const inbox = new TurnInput({
-          messageId: "web_" + randomBytes(8).toString("hex"),
-          text: typed,
-          receivedAt: new Date().toISOString(),
-          timezone: timezone(config.timezone),
-        }, lifetime.signal);
-        // 被丢弃的那段回复要能从界面上撤掉
-        inbox.setResetHandler(() => send({ type: "reset" }));
-        const turnId = "t_" + randomBytes(8).toString("hex");
-        webInboxes.set(turnId, inbox);
-        send({ type: "started", turn: turnId });
+        const images = await saveUploads(data.session, data.images);
+        // 图落盘了，但这一轮还没算真正开始。清理的界是「用户消息有没有落库」，
+        // 见下面 catch：落库之后不许擦。
+        const dropUploads = async () => {
+          await Promise.all(
+            images.map((image) => rm(resolvePath(image.path), { force: true }).catch((error) => {
+              logger.warn("清理网页上传图片失败", { path: image.path, error });
+            })),
+          );
+        };
+        let inbox: TurnInput | undefined;
+        let turnId: string | undefined;
         try {
+          const typed = String(data.text ?? "");
+          // 图片既落盘，也把路径写进本条文本：历史重开时仍看得到图，模型那头另有 image_url。
+          const marked = images.length
+            ? [typed.trim(), ...images.map((image) => "[[img:" + image.path + "]]")].filter(Boolean).join("\n")
+            : typed;
+          inbox = new TurnInput({
+            messageId: "web_" + randomBytes(8).toString("hex"),
+            text: marked,
+            receivedAt: new Date().toISOString(),
+            timezone: timezone(config.timezone),
+          }, lifetime.signal);
+          // 被丢弃的那段回复要能从界面上撤掉
+          inbox.setResetHandler(() => send({ type: "reset" }));
+          turnId = "t_" + randomBytes(8).toString("hex");
+          webInboxes.set(turnId, inbox);
+          send({ type: "started", turn: turnId });
           await channels.web(
             data.session,
-            typed,
+            marked,
             (text: string) => send({ type: "chunk", text }),
             (context: any) => send({ type: "context", ...context }),
             typeof data.persona === "string" ? data.persona : undefined,
+            images.map((image) => ({ mimeType: image.mimeType, data: image.data })),
             inbox,
           );
+        } catch (error) {
+          // 界是「用户消息有没有落库」，不是「模型有没有回话」：落库之后历史里
+          // 那行 [[img:]] 还指着文件，擦掉就成了断链；没落库才是没人引用的孤儿。
+          // 落库结果不明时（uploadsKept）按已落库处理——宁可留孤儿图，不能断链。
+          const orphan = !inbox || (!inbox.persisted(inbox.messageId) && !inbox.uploadsKept);
+          if (orphan) await dropUploads();
+          throw error;
         } finally {
-          inbox.closeInput();
-          webInboxes.delete(turnId);
+          inbox?.closeInput();
+          if (turnId) webInboxes.delete(turnId);
         }
         send({ type: "done" });
       } catch (error: any) {

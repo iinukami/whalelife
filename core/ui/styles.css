@@ -2218,6 +2218,44 @@ dialog::backdrop {
 .extension-panel { overflow: hidden; min-height: 480px; }
 .extension-frame { display: block; width: 100%; height: max(480px, calc(100dvh - 230px)); border: 0; background: white; }
 
+/* 消息内的图片与语音 */
+.msg-media { display: block; max-width: min(360px, 100%); margin-top: 8px; border-radius: 10px; }
+.bubble img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(320px, 100%);
+  max-height: 220px;
+  margin-top: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  object-fit: cover;
+  cursor: zoom-in;
+  background: #f2f3f7;
+}
+.image-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(12, 14, 18, 0.82);
+  cursor: zoom-out;
+}
+.image-zoom[hidden] { display: none; }
+.image-zoom img { max-width: 96vw; max-height: 92vh; border-radius: 8px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45); }
+.composer.dragging { outline: 2px dashed var(--accent, #c5ac72); outline-offset: -4px; }
+.composer-images { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px 0; }
+.composer-images[hidden] { display: none; }
+.pending-image { position: relative; margin: 0; }
+.pending-image img { display: block; width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid rgba(0, 0, 0, 0.12); }
+.pending-image button { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 13px; line-height: 20px; cursor: pointer; }
+.composer .attach { cursor: pointer; margin-right: 8px; }
+.composer .attach input { display: none; }
+.msg-audio { display: block; width: min(320px, 100%); margin-top: 8px; }
+
 /* 思考中提示 */
 .bubble.thinking { display: inline-flex; align-items: center; gap: 5px; color: #8a8f98; letter-spacing: 0.02em; }
 .bubble.thinking i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; font-style: normal; animation: think-dot 1.2s infinite ease-in-out; }

@@ -23,7 +23,11 @@ export class TurnInput {
   private persister?: (message: TurnMessage) => Promise<void>;
   // 哪些补充在接收时就已经落盘了，消费方别再写一遍
   private persistedIds = new Set<string>();
+  /** 落库结果不确定时置位：图片一律保留，等人工清理。 */
+  private uploadsGuarded = false;
   private resetHandler?: () => void;
+  /** 这一轮主消息的 id。web 那头要在失败时区分「已落库」和「根本没开始」。 */
+  readonly messageId: string;
 
   /** 谁来把补充落盘。会话在开跑时就该挂上，别等 consumeInput 才写。 */
   setPersister(persist: (message: TurnMessage) => Promise<void>) {
@@ -33,6 +37,23 @@ export class TurnInput {
   /** 这条补充是不是已经由 persister 落过盘。排队中的轮次还没有 persister，答案是否。 */
   persisted(messageId: string) {
     return this.persistedIds.has(messageId);
+  }
+
+  /** 主消息已经落库。落库之后历史就指着图了，外面不能再去擦。 */
+  markPersisted(messageId: string) {
+    this.persistedIds.add(messageId);
+  }
+  /**
+   * 落库结果不明（比如 JSONL 追加成功、随后的元数据写入失败）。
+   * 这时历史里可能已经有那行 [[img:]]，宁可留下没人引用的孤儿图，也不能让它指向不存在的文件。
+   */
+  protectUploads() {
+    this.uploadsGuarded = true;
+  }
+
+  /** 图片被标记为「不许擦」过。 */
+  get uploadsKept() {
+    return this.uploadsGuarded;
   }
 
   /** A Web turn may be registered before its session has installed the history writer. */
@@ -52,6 +73,7 @@ export class TurnInput {
   constructor(initial: TurnMessage, signal: AbortSignal) {
     this.validate(initial);
     this.signal = AbortSignal.any([signal, this.historyFailure.signal]);
+    this.messageId = initial.messageId;
     // The initial pictures are already owned by the channel route; keep only their identity here.
     const { images, ...fields } = initial;
     const message = structuredClone(fields);

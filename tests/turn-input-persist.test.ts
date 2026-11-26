@@ -88,7 +88,8 @@ test("同一 messageId 重送只写一行", async () => {
 test("信箱按轮登记，不按会话：同一会话的两轮各有各的 turn id", async () => {
   const source = await webSource();
   // 开轮时登记 turn id 并告诉前端
-  assert.match(source, /const turnId = "t_" \+ randomBytes\(8\)\.toString\("hex"\);/);
+  // 开轮时生成并登记 turn id；不锚定 const，变量作用域随外层 try 变过。
+  assert.match(source, /turnId = "t_" \+ randomBytes\(8\)\.toString\("hex"\);/);
   assert.match(source, /webInboxes\.set\(turnId, inbox\);/);
   assert.match(source, /send\(\{ type: "started", turn: turnId \}\);/);
   // 补充只认自己那一轮的 id，不再退回「本会话当前轮」

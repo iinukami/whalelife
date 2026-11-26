@@ -17,8 +17,20 @@ const SAFE_URL = /^(https?:\/\/|mailto:|\/|#|\.{1,2}\/)/i;
 
 /** 行内语法：行内代码 / 链接 / 粗体 / 删除线 / 斜体。入参必须已经过转义。 */
 export function inlineRich(escaped) {
+  // [[img:路径]] / [[voice:路径]] 标记换成媒体元素：先占位，
+  // 免得路径里的 * _ 被当成强调定界符。入参已经过转义。
+  const medias = [];
+  const mediaUrl = (path) => `/api/media?path=${encodeURIComponent(path.replace(/&amp;/g, "&"))}`;
+  const withMedia = escaped.replace(/\[\[(img|voice):([^\]]+)\]\]/g, (whole, kind, path) => {
+    medias.push(
+      kind === "img"
+        ? `<img class="msg-media" src="${mediaUrl(path)}" alt="图片" loading="lazy">`
+        : `<audio class="msg-audio" controls preload="none" src="${mediaUrl(path)}"></audio>`,
+    );
+    return `\u0002${medias.length - 1}\u0002`;
+  });
   const codes = [];
-  const held = escaped.replace(INLINE_CODE, (whole, run, code) => {
+  const held = withMedia.replace(INLINE_CODE, (whole, run, code) => {
     codes.push(code);
     return `\u0000${codes.length - 1}\u0000`;
   });
@@ -41,7 +53,8 @@ export function inlineRich(escaped) {
     .replace(
     /\u0000(\d+)\u0000/g,
     (whole, index) => `<code>${codes[Number(index)] ?? ""}</code>`,
-  );
+  )
+    .replace(/\u0002(\d+)\u0002/g, (whole, index) => medias[Number(index)] ?? "");
 }
 
 /** 表格行：转义的 `\|` 是单元格内容，不当作分隔符。 */

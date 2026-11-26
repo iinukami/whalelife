@@ -68,6 +68,7 @@ class ConsoleApp {
     status: null,
     probes: {},
     messages: [],
+    pendingImages: [],
     logs: [],
     logFollow: true,
     chatBusy: false,
@@ -944,9 +945,12 @@ class ConsoleApp {
   }
   sendMessage() {
     const text = ($("chat-input")?.value || "").trim();
-    if (!text || !this.chatConnected || $("send").disabled) return;
+    const images = (this.state.pendingImages || []).slice();
+    if ((!text && !images.length) || !this.chatConnected || $("send").disabled) return;
     // 本轮还在跑：不排队、不新起一轮，直接并进当前回合让它中途改方向。
     if (this.state.chatBusy) {
+      // 补充只走文本：中途插话别再自带一堆二进制。
+      if (images.length) return this.toast("补充消息先别带图，等这轮跑完再发", true);
       // 稳定 ID：同一句重送不会写出两条历史，服务端按它去重。
       const messageId = "nudge_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
       this.chatWS.send(
@@ -960,13 +964,15 @@ class ConsoleApp {
       this.renderMessages();
       return;
     }
-    this.state.messages.push({ role: "user", text });
+    this.state.messages.push({ role: "user", text, images: images.map((image) => image.dataUrl) });
     // 记下这一条，服务端没接住时好把原文放回输入框
     this.pendingSend = { text, index: this.state.messages.length - 1 };
     this.state.chatBusy = true;
     this.state.chatDraft = "";
+    this.state.pendingImages = [];
     this.reply = null;
     $("chat-input").value = "";
+    this.renderPendingImages();
     this.replyPersonaName = this.state.status.personaName;
     this.chatWS.send(
       JSON.stringify({
@@ -974,10 +980,119 @@ class ConsoleApp {
         expectedSession: this.state.session,
         text,
         persona: this.state.status.persona,
+        ...(images.length
+          ? { images: images.map((image) => ({ mimeType: image.mimeType, data: image.dataUrl.slice(image.dataUrl.indexOf(",") + 1) })) }
+          : {}),
       }),
     );
     this.updateChatControls();
     this.renderMessages();
+  }
+  /** 粘贴、拖拽、文件选择都走这里；超出 4 张或格式不对当场说清楚，不悄悄丢。 */
+  async addImages(files, source = "pick") {
+    const room = 4 - this.state.pendingImages.length;
+    if (room <= 0) return this.toast("一次最多发送 4 张图片", true);
+    const usable = [...files].filter(
+      (file) =>
+        ["image/png", "image/jpeg", "image/webp", "image/bmp"].includes(file.type) ||
+        (source === "paste" && !file.type && file.size > 0),
+    );
+    if (!usable.length && source !== "paste") return this.toast("只支持 PNG、JPEG、WebP、BMP 图片", true);
+    const pending = this.state.pendingImages;
+    const session = this.state.session;
+    const current = () => pending === this.state.pendingImages && session === this.state.session;
+    let failed = null;
+    let skipped = false;
+    for (const file of usable) {
+      if (!current()) return;
+      if (pending.length >= 4) {
+        skipped = true;
+        break;
+      }
+      try {
+        const image = await shrinkImage(file);
+        if (!current()) return;
+        if (pending.length < 4) pending.push(image);
+        else skipped = true;
+      } catch (error) {
+        failed = error;
+      }
+    }
+    if (current() && pending.length < 4 && source === "paste" && (!usable.length || failed)) {
+      try {
+        const image = await clipboardImage();
+        if (!current()) return;
+        if (pending.length < 4) {
+          pending.push(image);
+          failed = null;
+        } else skipped = true;
+      } catch (error) {
+        failed = Error(`${failed ? failed.message + "；" : ""}系统剪贴板也没取到：${error.message}`);
+      }
+    }
+    if (!current()) return;
+    if (failed) this.toast(failed.message, true);
+    else if (skipped) this.toast("一次最多发送 4 张图片", true);
+    this.renderPendingImages();
+  }
+  renderPendingImages() {
+    const strip = $("composer-images");
+    if (!strip) return;
+    strip.innerHTML = this.state.pendingImages
+      .map(
+        (image, index) =>
+          `<figure class="pending-image"><img src="${image.dataUrl}" alt="待发送图片"><button type="button" data-drop="${index}" title="移除">×</button></figure>`,
+      )
+      .join("");
+    strip.querySelectorAll("[data-drop]").forEach((button) => {
+      button.onclick = () => {
+        this.state.pendingImages.splice(Number(button.dataset.drop), 1);
+        this.renderPendingImages();
+      };
+    });
+    strip.hidden = !this.state.pendingImages.length;
+  }
+  bindImageComposer() {
+    const form = $("chat-form"), input = $("chat-input"), picker = $("image-input");
+    if (!form || !input) return;
+    this.renderPendingImages();
+    if (picker) {
+      picker.onchange = () => {
+        const files = [...picker.files];
+        picker.value = "";
+        this.addImages(files);
+      };
+    }
+    input.onpaste = (event) => {
+      const files = [...(event.clipboardData?.files || [])].filter(
+        (file) => file.type.startsWith("image/") || (!file.type && file.size > 0),
+      );
+      if (files.length) {
+        event.preventDefault();
+        return this.addImages(files, "paste");
+      }
+      // 没有图片文件：纯文本粘贴交给浏览器，别抢。
+      const typed = event.clipboardData?.getData("text") || "";
+      if (typed.trim()) return;
+      // 剪贴板里既没图也没字：可能只有位图，回头问系统剪贴板要。
+      event.preventDefault();
+      this.addImages([], "paste");
+    };
+    form.ondragover = (event) => {
+      event.preventDefault();
+      form.classList.add("dragging");
+    };
+    form.ondragleave = () => form.classList.remove("dragging");
+    form.ondrop = (event) => {
+      const files = [...(event.dataTransfer?.files || [])].filter((file) => file.type.startsWith("image/"));
+      event.preventDefault();
+      form.classList.remove("dragging");
+      if (!files.length) {
+        this.toast("拖进来的不是图片文件", true);
+        return;
+      }
+      this.addImages(files);
+    };
   }
   async newSession() {
     if (this.state.chatBusy || this.sessionChanging) return;
@@ -1320,5 +1435,139 @@ function messageRows(rows, positions) {
     }));
 }
 
+/** 浏览器解不开时，回头问系统剪贴板要图：服务端用 GDI+ 存成 PNG 再送回来。 */
+async function clipboardImage() {
+  const value = await api("/api/clipboard-image", {});
+  const blob = await (await fetch(value.dataUrl)).blob();
+  return await shrinkImage(new File([blob], "clipboard.png", { type: "image/png" }));
+}
+
+/** 读成 data URL。 */
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** 裸 DIB（缺 "BM" 文件头的位图）补一个文件头，浏览器才认得。微信截图走剪贴板常常给的是这个。 */
+async function dibToBmp(file) {
+  if (file.size < 64) return null;
+  const head = new Uint8Array(await file.slice(0, 64).arrayBuffer());
+  if (head[0] === 0x42 && head[1] === 0x4d) return null;
+  const view = new DataView(head.buffer);
+  const headerSize = view.getUint32(0, true);
+  const bits = view.getUint16(14, true);
+  const compression = view.getUint32(16, true);
+  if (![40, 108, 124].includes(headerSize) || ![24, 32].includes(bits) || compression !== 0) return null;
+  const dib = new Uint8Array(await file.arrayBuffer());
+  const bmp = new Uint8Array(14 + dib.length);
+  const out = new DataView(bmp.buffer);
+  bmp[0] = 0x42;
+  bmp[1] = 0x4d;
+  out.setUint32(2, bmp.length, true);
+  out.setUint32(10, 14 + headerSize, true);
+  bmp.set(dib, 14);
+  return new Blob([bmp], { type: "image/bmp" });
+}
+
+/** 解一张图：先 createImageBitmap，再 <img>，最后试修补裸 DIB。三条都挂才报错。 */
+async function decodeImage(file, dataUrl) {
+  const viaBitmap = async (source) => {
+    if (typeof createImageBitmap !== "function") throw Error("no createImageBitmap");
+    const bitmap = await createImageBitmap(source);
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      trust: source === file,
+      draw: (context, w, h) => context.drawImage(bitmap, 0, 0, w, h),
+    };
+  };
+  const viaImage = async (url) => {
+    const element = await new Promise((resolve, reject) => {
+      const probe = new Image();
+      probe.onload = () => resolve(probe);
+      probe.onerror = () => reject(Error("decode"));
+      probe.src = url;
+    });
+    return {
+      width: element.naturalWidth,
+      height: element.naturalHeight,
+      trust: url === dataUrl,
+      draw: (context, w, h) => context.drawImage(element, 0, 0, w, h),
+    };
+  };
+  try {
+    return await viaBitmap(file);
+  } catch {}
+  try {
+    return await viaImage(dataUrl);
+  } catch {}
+  const repaired = await dibToBmp(file);
+  if (repaired) {
+    try {
+      return await viaBitmap(repaired);
+    } catch {}
+    try {
+      return await viaImage(await readDataUrl(repaired));
+    } catch {}
+  }
+  const hint = repaired ? "已试过补文件头修裸位图" : "剪贴板给的图数据常是残缺的";
+  throw Error(
+    `图片无法解码（${file.type || "类型未知"}，${Math.max(1, Math.round(file.size / 1024))} KB）——${hint}，改用「图片」按钮直接选文件试试`,
+  );
+}
+
+/** 超过 1600px 或 2MiB 才重编码；小图原样送，截图里的字不会被压糊。 */
+async function shrinkImage(file) {
+  if (file.size > 6 * 1024 * 1024) throw Error("单张图片需在 6MiB 以内");
+  const dataUrl = await readDataUrl(file);
+  const image = await decodeImage(file, dataUrl);
+  const scale = Math.min(1, 1600 / Math.max(image.width, image.height));
+  const passThrough = ["image/png", "image/jpeg", "image/webp"].includes(file.type);
+  if (image.trust && passThrough && scale === 1 && file.size <= 2 * 1024 * 1024)
+    return { mimeType: file.type, dataUrl };
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext("2d");
+  if (!image.trust) {
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  image.draw(context, canvas.width, canvas.height);
+  const type = file.type === "image/png" || !image.trust ? "image/png" : "image/jpeg";
+  const shrunk = canvas.toDataURL(type, 0.9);
+  const prefixLength = shrunk.indexOf(",") + 1;
+  if (!prefixLength || prefixLength === shrunk.length) throw Error("图片编码失败");
+  const padding = shrunk.endsWith("==") ? 2 : shrunk.endsWith("=") ? 1 : 0;
+  const bytes = (shrunk.length - prefixLength) * 3 / 4 - padding;
+  if (bytes > 4 * 1024 * 1024) throw Error("图片压缩后仍超过 4MiB");
+  return { mimeType: type, dataUrl: shrunk };
+}
+function installImageZoom() {
+  // 没有 DOM 的环境（测试桩、纯逻辑跑）直接跳过，别在顶层抛。
+  if (typeof document === "undefined" || typeof document.createElement !== "function") return;
+  const box = document.createElement("div");
+  box.className = "image-zoom";
+  box.hidden = true;
+  box.innerHTML = '<img alt="放大查看">';
+  document.body.appendChild(box);
+  const close = () => { box.hidden = true; box.querySelector("img").src = ""; };
+  box.onclick = close;
+  document.addEventListener("keydown", (evt) => { if (evt.key === "Escape") close(); });
+  document.addEventListener("click", (evt) => {
+    const img = evt.target.closest && evt.target.closest(".bubble img, .messages img");
+    if (!img || !img.src) return;
+    evt.preventDefault();
+    box.querySelector("img").src = img.src;
+    box.hidden = false;
+  });
+
+}
+
 const app = new ConsoleApp();
 app.start();
+installImageZoom();
