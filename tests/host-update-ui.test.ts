@@ -12,6 +12,7 @@ const ready = {
 function overview() {
   const slot = {
     innerHTML: "", ownerDocument: { activeElement: null }, contains: () => false,
+    querySelector: () => null,
     onclick: (_event: unknown) => {},
   };
   let confirm: (() => Promise<void>) | undefined;
@@ -53,7 +54,7 @@ test("a console read or cancelled dialog cannot apply an update; confirming pins
   await view.confirm();
   assert.deepEqual(requests.map(call => call.path), ["/api/host-update", "/api/host-update/apply"]);
   assert.deepEqual(JSON.parse(requests[1].body!), { version: "0.1.1", confirmed: true });
-  assert.match(view.slot.innerHTML, /正在准备本体更新/);
+  assert.match(view.slot.innerHTML, /data-phase="prepare"/);
   assert.doesNotMatch(view.slot.innerHTML, /更新成功/);
 });
 
@@ -72,7 +73,7 @@ test("an interrupted apply waits for server status and 401 requires login; rollb
   await turn();
   view.click("open");
   await view.confirm();
-  assert.match(view.slot.innerHTML, /正在重新连接/);
+  assert.match(view.slot.innerHTML, /data-phase="reconnect"/);
   assert.doesNotMatch(view.slot.innerHTML, /更新成功/);
   t.mock.timers.tick(2000);
   await turn();
@@ -142,4 +143,131 @@ test("opening and idling on the overview only read local status; a click checks 
   t.mock.timers.tick(60 * 60_000);
   await turn();
   assert.deepEqual(paths, ["/api/host-update", "/api/host-update/check"]);
+});
+
+test("a three-minute disconnect preserves the last confirmed stage and reconnect only reads the current result", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: new Date("2026-11-27T12:00:00Z") });
+  const view = overview();
+  const paths: string[] = [];
+  let offline = false, recovered = false;
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    paths.push(path);
+    if (path.endsWith("/apply")) return Response.json({ ...ready, phase: "restarting" });
+    if (offline) throw TypeError("连接中断");
+    if (recovered) return Response.json({ ...ready, current: "0.1.1", latest: null,
+      lastResult: { status: "updated", version: "0.1.1", message: "已切换版本", at: new Date().toISOString() } });
+    return Response.json(ready);
+  });
+  t.after(() => resetHostUpdateSession(view.app));
+  bindHostUpdate(view.app);
+  await turn();
+  view.click("open");
+  await view.confirm();
+  assert.match(view.slot.innerHTML, /data-phase="restart"/);
+  offline = true;
+  t.mock.timers.tick(2_000);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="reconnect"/);
+  assert.doesNotMatch(view.slot.innerHTML, /data-host-action="reconnect"/);
+  t.mock.timers.tick(178_000);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="reconnect"/);
+  t.mock.timers.tick(2_000);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="timeout"/);
+  assert.match(view.slot.innerHTML, /data-host-action="reconnect"/);
+  assert.match(view.slot.innerHTML, /v0\.1\.0/);
+  assert.match(view.slot.innerHTML, /v0\.1\.1/);
+  const countAtTimeout = paths.length;
+  t.mock.timers.tick(60_000);
+  await turn();
+  assert.equal(paths.length, countAtTimeout);
+  offline = false;
+  recovered = true;
+  view.click("reconnect");
+  view.click("reconnect");
+  await turn();
+  assert.deepEqual(paths.slice(countAtTimeout), ["/api/host-update"]);
+  assert.equal(paths.filter(p => p.endsWith("/apply")).length, 1);
+  assert.match(view.slot.innerHTML, /data-phase="success"/);
+  assert.match(view.slot.innerHTML, /已更新到 v0\.1\.1/);
+});
+
+test("the previous rollback of the same target cannot finish a retry and a preparation failure is never a rollback", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: new Date("2026-11-27T12:00:00Z") });
+  const view = overview();
+  const prior = { status: "rolled-back", version: "0.1.1", message: "上次预检失败", at: "2026-11-26T10:00:00Z" };
+  let newFailure = false;
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    const result = newFailure
+      ? { status: "failed", version: "0.1.1", message: "安装包 SHA-256 校验失败", at: new Date().toISOString() }
+      : prior;
+    return Response.json({ ...ready, phase: path.endsWith("/apply") ? "preparing" : "idle", lastResult: result });
+  });
+  t.after(() => resetHostUpdateSession(view.app));
+  bindHostUpdate(view.app);
+  await turn();
+  view.click("open");
+  await view.confirm();
+  t.mock.timers.tick(2_000);
+  await turn();
+  assert.doesNotMatch(view.slot.innerHTML, /data-phase="(?:success|restored|failed)"/);
+  newFailure = true;
+  t.mock.timers.tick(2_000);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="failed"/);
+  assert.match(view.slot.innerHTML, /安装包 SHA-256 校验失败/);
+  assert.doesNotMatch(view.slot.innerHTML, /data-phase="restored"/);
+});
+
+test("a rejected apply does not leave the relogged console waiting for an update that never started", async t => {
+  const entries = new Map<string, string>();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { sessionStorage: {
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => entries.set(key, value),
+    removeItem: (key: string) => entries.delete(key),
+  } } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "window", previous);
+    else Reflect.deleteProperty(globalThis, "window");
+  });
+  const view = overview();
+  t.after(() => resetHostUpdateSession(view.app));
+  t.mock.method(globalThis, "fetch", async (path: string) => path.endsWith("/apply")
+    ? Response.json({ error: "请先登录" }, { status: 401 }) : Response.json(ready));
+  bindHostUpdate(view.app);
+  await turn();
+  view.click("open");
+  await view.confirm();
+  assert.equal(view.app.authenticated, false);
+  view.app.authenticated = true;
+  bindHostUpdate(view.app);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-host-action="open"/);
+  assert.doesNotMatch(view.slot.innerHTML, /data-phase="(?:unconfirmed|reconnect|timeout)"/);
+});
+
+test("reconnecting after a lost submission can return to checking if the host is idle without a receipt", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: new Date("2026-11-27T12:00:00Z") });
+  const view = overview(), paths: string[] = [];
+  t.after(() => resetHostUpdateSession(view.app));
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    paths.push(path);
+    if (path.endsWith("/apply")) throw TypeError("响应中断");
+    return Response.json(ready);
+  });
+  bindHostUpdate(view.app);
+  await turn();
+  view.click("open");
+  await view.confirm();
+  t.mock.timers.tick(180_000);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="timeout"/);
+  view.click("reconnect");
+  await turn();
+  assert.match(view.slot.innerHTML, /data-host-action="check"/);
+  assert.doesNotMatch(view.slot.innerHTML, /data-phase="(?:success|restored|timeout)"/);
+  assert.equal(paths.filter(p => p.endsWith("/apply")).length, 1);
+  assert.equal(paths.filter(p => p.endsWith("/check")).length, 0);
 });

@@ -619,6 +619,147 @@ main {
   .host-update-actions { flex-wrap: wrap; gap: 6px; }
   .host-update-actions:has(.host-release-link) { width: 100%; justify-content: flex-end; }
 }
+.host-update:has(> .wl-card) {
+  container-type: inline-size;
+  padding: 0;
+}
+.host-update .wl-card {
+  --status: var(--accent);
+  --status-soft: color-mix(in srgb, var(--status) 11%, var(--surface));
+  --secondary-text: color-mix(in srgb, var(--text) 30%, var(--muted));
+  --inset: clamp(16px, 4cqi, 28px);
+}
+.host-update .wl-card[data-tone="good"] { --status: color-mix(in srgb, var(--green) 72%, var(--text)); }
+.host-update .wl-card[data-tone="wait"] { --status: #916118; }
+.host-update .wl-card[data-tone="error"] { --status: #b04353; }
+.host-update :is(.wl-head, .wl-hero, .wl-foot) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-inline: var(--inset);
+}
+.host-update .wl-head {
+  min-height: 57px;
+  padding-block: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.host-update :is(.wl-brand, .wl-version, .wl-step) { display: inline-flex; align-items: center; gap: 8px; }
+.host-update .wl-brand { color: var(--secondary-text); font-size: 13px; }
+.host-update .wl-brand :is(b, strong) { color: var(--text); font-size: 15px; font-weight: 650; }
+.host-update .wl-slash { color: var(--muted); }
+.host-update .wl-emblem, .host-update .wl-node { display: grid; place-items: center; flex: none; }
+.host-update .wl-emblem {
+  width: 28px; height: 28px;
+  border-radius: 9px;
+  color: var(--accent); background: var(--accent-soft);
+}
+.host-update .wl-emblem svg { width: 18px; height: 18px; }
+.host-update .wl-version {
+  flex-wrap: wrap;
+  padding: 3px 9px;
+  border-radius: 7px;
+  color: var(--secondary-text); background: var(--bg);
+  font: 12px/1.6 ui-monospace, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.host-update .wl-version :is(b, strong) { color: var(--text); }
+.host-update .wl-hero { min-height: 106px; padding-block: 18px 13px; }
+.host-update .wl-copy { min-width: 0; overflow-wrap: anywhere; }
+.host-update .wl-copy h2 { font-size: clamp(20px, 4cqi, 27px); line-height: 1.3; letter-spacing: -.025em; }
+.host-update .wl-copy p { margin-top: 6px; color: var(--secondary-text); line-height: 1.7; }
+.host-update .wl-signal { display: flex; align-items: center; flex: none; color: var(--status); }
+.host-update .wl-node {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  color: var(--secondary-text); background: var(--bg);
+}
+.host-update .wl-host { color: var(--status); background: var(--status-soft); }
+.host-update .wl-node svg { width: 20px; height: 20px; }
+.host-update .wl-wire { position: relative; width: 38px; height: 2px; margin-inline: 4px; background: var(--line); }
+.host-update [data-phase="restart"] .wl-host { animation: host-update-breathe 1.9s ease-in-out infinite; }
+.host-update :is([data-phase="reconnect"], [data-phase="retrying"], [data-phase="timeout"]) .wl-wire {
+  background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 7px);
+}
+.host-update [data-tone="active"] .wl-packet {
+  position: absolute;
+  top: -1px; left: 0;
+  width: 7px; height: 4px;
+  border-radius: 3px;
+  background: currentColor;
+  animation: host-update-signal 1.8s ease-in-out infinite;
+}
+.host-update :is([data-phase="success"], [data-phase="restored"]) .wl-wire { background: currentColor; }
+.host-update .wl-track {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 4px var(--inset) 17px;
+}
+.host-update .wl-band { position: relative; display: block; height: 4px; overflow: hidden; border-radius: 4px; background: var(--line); }
+.host-update .wl-step { margin-top: 7px; gap: 6px; color: var(--secondary-text); font-size: 13px; }
+.host-update .wl-marker {
+  flex: none;
+  display: grid; place-items: center;
+  width: 11px; height: 11px;
+  border-radius: 50%; border: 1px solid currentColor;
+}
+.host-update [data-mark="done"] .wl-band { background: var(--accent); }
+.host-update [data-tone="good"] [data-mark="done"] .wl-band, .host-update [data-mark="outcome"] .wl-band { background: var(--status); }
+.host-update [data-mark="done"] .wl-marker { border: 0; }
+.host-update [data-mark="done"] .wl-marker::after {
+  content: "";
+  width: 8px; height: 4px;
+  border-left: 1.5px solid; border-bottom: 1.5px solid;
+  transform: rotate(-45deg) translateY(-1px);
+}
+.host-update :is([data-mark="current"], [data-mark="held"], [data-mark="outcome"]) .wl-step { color: var(--status); font-weight: 600; }
+.host-update [data-mark="current"] .wl-marker::after, .host-update :is([data-mark="held"], [data-mark="outcome"]) .wl-marker::after {
+  content: "";
+  width: 3px; height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.host-update :is([data-mark="held"], [data-mark="outcome"]) .wl-marker::after { width: 5px; height: 1.5px; border-radius: 0; }
+.host-update [data-mark="held"] .wl-band { background: repeating-linear-gradient(110deg, var(--status-soft) 0 6px, var(--status) 6px 8px); }
+.host-update [data-mark="current"] .wl-band { background: var(--status-soft); }
+.host-update [data-mark="current"] .wl-band::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, var(--status), transparent);
+  animation: host-update-sweep 2.4s ease-in-out infinite;
+}
+.host-update .wl-foot { align-items: flex-start; flex-wrap: wrap; gap: 0 12px; border-top: 1px solid var(--line); }
+.host-update .wl-foot details { flex: 1 1 100px; min-width: 0; }
+.host-update .wl-foot summary {
+  display: flex; align-items: center; gap: 7px;
+  width: fit-content; min-height: 44px;
+  list-style: none; cursor: pointer;
+  color: var(--secondary-text); font-size: 13px;
+}
+.host-update .wl-foot summary::-webkit-details-marker { display: none; }
+.host-update .wl-foot summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.host-update .wl-caret { display: inline-block; transition: transform .18s; }
+.host-update details[open] .wl-caret { transform: rotate(90deg); }
+.host-update .wl-log { margin: 0 0 14px; padding-inline-start: 19px; overflow-wrap: anywhere; color: var(--secondary-text); font-size: 13px; }
+.host-update .wl-foot .host-update-actions { min-height: 44px; flex-wrap: wrap; padding-block: 5px; }
+@keyframes host-update-breathe { 50% { opacity: .55; } }
+@keyframes host-update-signal { 0% { transform: translateX(0); opacity: 0; } 20%, 80% { opacity: 1; } 100% { transform: translateX(31px); opacity: 0; } }
+@keyframes host-update-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@container (max-width: 470px) {
+  .wl-card .wl-signal { display: none; }
+  .wl-card .wl-head { gap: 6px; }
+  .wl-card .wl-hero { min-height: 95px; }
+  .wl-card .wl-step { gap: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .host-update .wl-card *, .host-update .wl-card *::after { animation: none !important; transition: none !important; }
+}
 .overview-grid {
   display: grid;
   grid-template-columns: 1.5fr 1fr;
