@@ -50,6 +50,14 @@ document
   .querySelectorAll("[data-whale]")
   .forEach((el) => (el.innerHTML = whale));
 
+/** 压成一行纯文本，摘要卡里用。 */
+function plainText(text) {
+  return String(text || "")
+    .replace(/[#*`>]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 class ConsoleApp {
   content = $("content");
   chatWS = null;
@@ -479,6 +487,9 @@ class ConsoleApp {
     }
     localStorage.whaleSession = id;
     this.state.messages = messageRows(page.items, page.positions);
+    // 一次就拉到头（会话不足一页）时前面确实一轮都没有，轮号从 1 起；
+    // 还有更早的没拉，就先空着，等往前翻页时再数。（勘 2026-11-26）
+    this.railPrefix = page.start === 0 ? 0 : undefined;
     this.state.paging = {
       total: page.total,
       start: page.start,
@@ -554,7 +565,431 @@ class ConsoleApp {
     if (!node) return;
     const top = node.getBoundingClientRect().top - box.getBoundingClientRect().top;
     this.setScrollTop(box, box.scrollTop + top + (Number(saved.offset) || 0));
-    this.updateRuler();
+    this.syncRail();
+  }
+/** 左侧段落目录：满 20 条或隔 30 分钟切一段，点一下跳到那段。 */
+  /** 左侧导航轨：一条用户请求一节。轨道上只画刻度，摘要放进悬浮卡（勘 2026-11-16）。 */
+  /** 一批显示多少格：按轨道高度算，扣掉首尾两个翻页格（勘 2026-11-25）。 */
+  railBatchSize() {
+    const rail = $("chat-rail");
+    const h = rail && rail.clientHeight ? rail.clientHeight : 0;
+    if (h < 80) return 48;
+    let n = Math.max(8, Math.floor((h - 12) / 16) - 2);
+    const shrink = this.railShrink;
+    if (shrink && shrink.h === h) n = Math.min(n, shrink.n);
+    else if (shrink) this.railShrink = null;
+    return n;
+  }
+  /** 左侧导航轨：一条用户请求一节。轨道上只画刻度，摘要放进悬浮卡（勘 2026-11-16）。
+      节数多过一批时，首尾各压成一格翻页入口，中间 n 格是本批；不翻页时末尾停在最新一节（勘 2026-11-25）。 */
+  renderOutline() {
+    const rail = $("chat-rail");
+    if (!rail) return;
+    // 轨和消息区必须是两个元素；万一是同一个（DOM 结构变了、id 撞了），
+    // 宁可把轨关掉，也不能擦掉正文——下面清 innerHTML 会把整个消息区清空。
+    if (rail === $("messages")) {
+      rail.hidden = true;
+      this.railTurns = [];
+      this.railStart = null;
+      return;
+    }
+    this.railTurns = [];
+    let turn = null;
+    (this.state.messages || []).forEach((m, index) => {
+      if (m.role === "user") {
+        // 中途补充（nudge）也挂在 user 上，但它是同一轮的补充，不是新的一问。
+        // 判据只认两条可靠信号：内存里刚发出去的那条带 nudge 标记；
+        // 刷新后从服务端读回来的，用户行上多了 external_message_id，且来自 web 渠道、形状对得上。
+        // 旧写法还拿「上一轮还没有回答」来猜，可中断、取消之后用户重新发问也是这个形状，
+        // 独立的新问题会被并进上一轮，导航上等于没有入口。（勘 2026-11-26 修）
+        const isNudge = !!m.nudge || isNudgeRow(m);
+        if (isNudge && turn) {
+          if (m.text) turn.nudges.push(plainText(m.text));
+          return;
+        }
+        turn = { from: index, ask: plainText(m.text), answers: [], nudges: [] };
+        this.railTurns.push(turn);
+        return;
+      }
+      if (turn && m.text) turn.answers.push(plainText(m.text));
+    });
+    // 前面还有更早历史时，哪怕这一页一条用户轮次都没有（全是助手主动消息），也不能藏整条轨：
+    // 藏了就等于把「载入更早」唯一的入口也藏了（作者在 PR #39 上报，勘 2026-11-26 修）。
+    const hasOlder = !!(this.state.paging && this.state.paging.hasMore);
+    if (this.railTurns.length < 3 && !hasOlder) {
+      rail.hidden = true;
+      rail.innerHTML = "";
+      this.railStart = null;
+      this.railPinned = false;
+      this.hideRailCard();
+      return;
+    }
+    rail.hidden = false;
+    const total = this.railTurns.length;
+    // 这一批前面还有多少轮：prefix 未知（首屏、前面没拉过）时不假装知道全会话轮号。
+    const prefix = Number.isFinite(this.railPrefix) ? this.railPrefix : null;
+    const size = this.railBatchSize();
+    this.railBatch = size;
+    // 手动翻过页就用 railStart 定的那一批；只有「跟随最新」时才强制贴在末尾
+    // （旧写法只认 pinned，翻页里把 pinned 设成 false 之后，一翻就被弹回末尾——勘 2026-11-25 修）
+    let start =
+      this.railPinned || !Number.isFinite(this.railStart) ? total - size : Math.round(this.railStart);
+    start = Math.max(0, Math.min(start, Math.max(0, total - 1)));
+    if (start + size > total) start = Math.max(0, total - size);
+    this.railStart = start;
+    const end = Math.min(total, start + size);
+    let html = "";
+    if (start > 0) {
+      html +=
+        '<button type="button" class="chat-rail-tick chat-rail-page" data-page="prev" aria-label="更早的 ' +
+        start + ' 轮"><i></i></button>';
+    } else if (this.state.paging && this.state.paging.hasMore) {
+      // 已经在最早那一批，但服务端还有更早的历史没拉进来：顶格给一个入口，
+      // 以前只能把正文滚到最顶触发，导航轨上够不着（作者在 PR #39 上报的第 4 条，勘 2026-11-26 补）。
+      html +=
+        '<button type="button" class="chat-rail-tick chat-rail-page chat-rail-older" data-page="older" aria-label="载入更早的历史"><i></i></button>';
+    }
+    for (let i = start; i < end; i += 1) {
+      const t = this.railTurns[i];
+      html +=
+        '<button type="button" class="chat-rail-tick" data-turn="' + i + '" data-ordinal="' +
+        (prefix === null ? "" : prefix + i + 1) +
+        '" aria-label="' + e(clip(t.ask, 40)) + '"><i></i></button>';
+    }
+    if (end < total) {
+      html +=
+        '<button type="button" class="chat-rail-tick chat-rail-page" data-page="next" aria-label="后面还有 ' +
+        (total - end) + ' 轮"><i></i></button>' +
+        '<button type="button" class="chat-rail-tick chat-rail-page chat-rail-latest" data-page="latest" aria-label="跳到最新"><i></i></button>';
+    }
+    rail.innerHTML = html;
+    // 新刻度没有过渡起点，直接出现会「啪」一下；先摘类再挂回去，重播一次淡入（勘 2026-11-25）。
+    rail.classList.remove("rail-swap");
+    void rail.offsetWidth;
+    rail.classList.add("rail-swap");
+    rail.querySelectorAll("[data-turn],[data-page]").forEach((tick) => {
+      tick.onmouseenter = () => this.showRailCard(tick);
+      tick.onmouseleave = () => this.hideRailCard();
+      tick.onfocus = () => this.showRailCard(tick);
+      tick.onblur = () => this.hideRailCard();
+      tick.onclick = () => {
+        if (tick.dataset.page) this.railPage(tick.dataset.page);
+        else this.jumpToTurn(Number(tick.dataset.turn));
+      };
+    });
+    this.railFromRender = true;
+    this.watchRail();
+    this.railFromRender = false;
+  }
+  /** 翻页：只换这一批刻度，不动消息区（勘 2026-11-25）。 */
+  railPage(dir) {
+    // 「载入更早」与这一批有没有轮次无关：整页都是助手主动消息时 railTurns 为空，
+    // 下面的早退会把唯一的入口变成死按钮（作者在 PR #39 上报，勘 2026-11-26 修）。
+    if (dir === "older") {
+      this.railLoadOlder();
+      return;
+    }
+    const total = (this.railTurns || []).length;
+    if (!total) return;
+    const size = this.railBatch || 48;
+    // 翻页按整批走，批次不重叠：格子数和「一批」对得上，提示的区间就是点下去真正到的那一批（勘 2026-11-25）
+    const from = Number.isFinite(this.railStart) ? this.railStart : Math.max(0, total - size);
+    if (dir === "latest") {
+      this.railPinned = true;
+      this.railStart = Math.max(0, total - size);
+      this.hideRailCard();
+      // renderOutline 内部会调一次 syncRail，那时高亮还在末尾：保护要先挂上，否则当场被判成「滚回最新」。
+      this.railJump = { from: this.railStart, to: this.railStart + size, until: Date.now() + RAIL_JUMP_MS };
+      this.renderOutline();
+      this.railJump = { from: this.railStart, to: this.railStart + (this.railBatch || size), until: Date.now() + RAIL_JUMP_MS };
+      this.jumpToTurn(total - 1);
+      return;
+    }
+    // 手动翻页就是脱离「跟随最新」。旧写法把 pinned 设成「后面还有没有内容」，
+    // 翻到早期批次后 pinned 仍是 true，下一次滚动就把这一批拽回末尾——看着像导航失灵（勘 2026-11-25 修）。
+    const start = dir === "prev" ? from - size : from + size;
+    this.railPinned = false;
+    this.railStart = Math.max(0, Math.min(start, Math.max(0, total - size)));
+    this.hideRailCard();
+    // renderOutline 内部会调一次 syncRail，那一下高亮还在末尾：保护要先挂上，否则当场被判定成「滚回最新」，
+    // 批次一路弹回末尾——点一次「更早」看着没反应（作者在 PR #39 上报的第 2 条，勘 2026-11-26 修）。
+    this.railJump = { from: this.railStart, to: this.railStart + size, until: Date.now() + RAIL_JUMP_MS };
+    this.renderOutline();
+    // 翻完要落到那一批的头一格（往前）或末一格（往后），否则刻度换了、消息停在原处（勘 2026-11-25 修）。
+    // 平滑滚动途中高亮仍在批外（甚至还在末尾），这段时间同样不许换批。
+    this.railJump = { from: this.railStart, to: this.railStart + (this.railBatch || size), until: Date.now() + RAIL_JUMP_MS };
+    this.jumpToTurn(
+      dir === "prev" ? this.railStart : Math.min(total - 1, this.railStart + (this.railBatch || 48) - 1),
+    );
+  }
+  /** 轨道顶格「载入更早」：往前拉一页历史，批次停在原处不跳（勘 2026-11-26）。 */
+  async railLoadOlder() {
+    if (this.loadingOlder) return;
+    const session = this.state.session;
+    const box = $("messages");
+    const before = (this.railTurns || []).length;
+    const startBefore = Number.isFinite(this.railStart) ? this.railStart : 0;
+    await this.loadOlder();
+    if (session !== this.state.session || box !== $("messages")) return;
+    const added = (this.railTurns || []).length - before;
+    // 没拉到（正在加载、或者已经没有更早的）就别动刻度
+    if (added <= 0) return;
+    // 新轮全加在前面：原来的第 startBefore 轮现在是 startBefore + added
+    this.railPinned = false;
+    this.railStart = Math.max(0, Math.min(startBefore + added, (this.railTurns || []).length - 1));
+    this.railJump = { from: this.railStart, to: this.railStart + (this.railBatch || 48), until: Date.now() + RAIL_JUMP_MS };
+    this.renderOutline();
+  }
+  railCard() {
+    let card = document.getElementById("chat-rail-card");
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "chat-rail-card";
+      card.className = "chat-rail-card";
+      card.hidden = true;
+      document.body.appendChild(card);
+    }
+    return card;
+  }
+  /** 悬浮卡贴在刻度右边，纵向不许出窗口。 */
+  /** 悬浮卡贴在刻度右边，纵向不许出窗口。翻页格显示的是这一批的轮次区间（勘 2026-11-25）。 */
+  showRailCard(tick) {
+    const card = this.railCard();
+    const total = (this.railTurns || []).length;
+    const size = this.railBatch || 48;
+    // 这一批前面还有多少轮；未知时不假装是全会话轮号（勘 2026-11-26）
+    const prefix = Number.isFinite(this.railPrefix) ? this.railPrefix : null;
+    const start = Number.isFinite(this.railStart) ? this.railStart : 0;
+    let head = "";
+    let body = "";
+    let meta = "";
+    if (tick.dataset.page === "latest") {
+      // 倒数第一格固定是「最新的一轮」，不是「又一批」（勘 2026-11-25 修）
+      head = "最新的一轮";
+      body = prefix === null ? "已加载第 " + total + " 轮" : "第 " + (prefix + total) + " 轮";
+      meta =
+        (prefix === null ? "共 " + total + " 轮（已加载）· 前面还有更早的" : "共 " + (prefix + total) + " 轮") +
+        " · 点一下跳回最新的对话";
+    } else if (tick.dataset.page === "older") {
+      head = "载入更早的历史";
+      body = "点一下往前拉一页，刻度留在当前这一批";
+      meta = (prefix === null ? "共 " + total + " 轮（已加载）" : "共 " + (prefix + total) + " 轮") + " · 前面还有更早的";
+    } else if (tick.dataset.page) {
+      // 提示的是「点下去会落到哪一批」，和 railPage 的落点一致，不是拍脑袋的区间（勘 2026-11-25）
+      const raw = tick.dataset.page === "prev" ? start - size : start + size;
+      const lo = Math.max(0, Math.min(raw, Math.max(0, total - size)));
+      const hi = Math.min(total, lo + size);
+      head = tick.dataset.page === "prev" ? "更早的一批" : "后面的一批";
+      body =
+        prefix === null
+          ? "已加载第 " + (lo + 1) + "–" + hi + " 轮"
+          : "第 " + (prefix + lo + 1) + "–" + (prefix + hi) + " 轮";
+      meta =
+        (prefix === null ? "共 " + total + " 轮（已加载）· 前面还有更早的" : "共 " + (prefix + total) + " 轮") +
+        " · 点一下换这一批";
+    } else {
+      const turn = (this.railTurns || [])[Number(tick.dataset.turn)];
+      if (!turn) return;
+      head = clip(turn.ask, 120);
+      const answer =
+        (turn.nudges && turn.nudges.length ? "补充：" + turn.nudges.join(" ") + " " : "") +
+        turn.answers.join(" ");
+      body = clip(answer || "（这一节没有回答）", 260);
+      // 先算条数再拼文案。旧写法第一项在前缀未知时是空串，"" + 1 得到 "1"，
+      // 再 + 答案数就拼成 "11 条"——一问一答会显示成 11 条（作者在 PR #39 上报，勘 2026-11-26 修）。
+      // 条数按这一轮的消息总数算：提问 1 + 补充 + 回答。
+      const count = 1 + (turn.nudges ? turn.nudges.length : 0) + turn.answers.length;
+      meta =
+        (prefix === null ? "" : prefix + Number(tick.dataset.turn) + 1 + " 轮 · ") + count + " 条";
+    }
+    card.innerHTML =
+      "<b>" + e(head) + "</b>" +
+      "<span>" + e(body) + "</span>" +
+      '<span class="chat-rail-card-meta">' + e(meta) + "</span>";
+    card.hidden = false;
+    const rect = tick.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
+    const left = Math.min(rect.right + 12, window.innerWidth - box.width - 12);
+    const top = Math.max(12, Math.min(rect.top - 8, window.innerHeight - box.height - 12));
+    card.style.left = Math.max(12, left) + "px";
+    card.style.top = top + "px";
+  }
+  hideRailCard() {
+    const card = document.getElementById("chat-rail-card");
+    if (card) card.hidden = true;
+  }
+  jumpToTurn(index) {
+    const turn = (this.railTurns || [])[index];
+    if (!turn) return;
+    const target = $("messages")?.querySelector('.message[data-index="' + turn.from + '"]');
+    if (!target) {
+      // 这一轮的消息还没装进页面（分页只装了最近一段），点了不会有反应（勘 2026-11-25 修）
+      if (typeof this.toast === "function")
+        this.toast("这一轮还没加载到页面，先点消息区顶部的「加载更早的」", true);
+      return;
+    }
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
+    // 用户打断平滑滚动也会触发 scrollend，交给 syncRail 确认高亮是否到达目标批次。
+    const box = $("messages");
+    const jump = this.railJump;
+    if (jump && box && typeof box.addEventListener === "function") {
+      const done = () => {
+        box.removeEventListener("scrollend", done);
+        if (this.railJump === jump && box === $("messages")) this.syncRail();
+      };
+      box.addEventListener("scrollend", done, { once: true, passive: true });
+    }
+  }
+  /** 滚动或窗口尺寸一变就重排：刻度按消息的真实位置摆，紫色只留一个（勘 2026-11-16）。
+      旧版一边画按比例插值的游标、一边画按消息判定的高亮，两者位置不一致，
+      看着就是"对不上"；窗口一改尺寸还会同时看到两条紫线。现在只保留刻度本身。 */
+  watchRail() {
+    const rail = $("chat-rail");
+    const box = $("messages");
+    if (!rail || !box) return;
+    // 每次 render() 都会用整页 markup 重建 #messages，拿到的是新节点；
+    // 旧监听还挂在被摘下来的那个节点上，此后滚动手势再也送不到轨道，
+    // 高亮就永远停在最后一次算出来的位置（勘 2026-11-16 修）。
+    if (this.railBox !== box) {
+      if (this.railBox && this.railScrollHandler)
+        this.railBox.removeEventListener("scroll", this.railScrollHandler);
+      this.railScrollHandler = () => this.syncRail();
+      box.addEventListener("scroll", this.railScrollHandler, { passive: true });
+      this.railBox = box;
+    }
+    if (!this.railWatched) {
+      this.railWatched = true;
+      window.addEventListener("resize", () => this.scheduleRail(), { passive: true });
+      // 切窗口回来时，尺寸没变、滚动没变，一个事件都不会来。
+      // 上一轮若是趁容器被隐藏时算过一遍，高亮就钉死了，得给个重新对账的机会（勘 2026-11-16 修）。
+      window.addEventListener("focus", () => this.syncRail());
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) this.syncRail();
+      });
+    }
+    // ResizeObserver 每次都要盯住"当前的"内容节点。
+    // 旧写法只在第一次 observe：一旦 #messages 的内层被整体换掉，
+    // 观察者盯的就是已经摘下来的节点，此后永不触发（勘 2026-11-16 修）。
+    if (typeof ResizeObserver === "function") {
+      const target = box.firstElementChild || box;
+      if (this.railObserverTarget !== target) {
+        if (!this.railObserver) this.railObserver = new ResizeObserver(() => this.syncRail());
+        this.railObserver.disconnect();
+        this.railObserver.observe(target);
+        this.railObserverTarget = target;
+      }
+    }
+    this.syncRail();
+  }
+  /** 拖窗口会连着来十几次 resize，每来一次就重画整条轨，看着就是一路闪；攒 120ms 再算（勘 2026-11-25）。 */
+  scheduleRail() {
+    if (this.railTimer) clearTimeout(this.railTimer);
+    this.railTimer = setTimeout(() => {
+      this.railTimer = null;
+      this.syncRail();
+    }, 120);
+  }
+  syncRail() {
+    const rail = $("chat-rail");
+    const box = $("messages");
+    if (!rail || !box || rail.hidden) return;
+    if (document.hidden || box.clientHeight < 1 || rail.clientHeight < 1) return;
+    // 输入区变高（贴了图、草稿多行）会把聊天区压矮，可窗口尺寸没变、也没滚动，
+    // 上面那些监听一个都不会来；刻度还按旧高度排的 top，就溢出到输入框下面去了（勘 2026-11-25 修）。
+    if (this.railHeightEl !== rail) {
+      if (this.railHeightObs) this.railHeightObs.disconnect();
+      this.railHeightEl = rail;
+      this.railHeightH = rail.clientHeight;
+      if (typeof ResizeObserver === "function") {
+        this.railHeightObs = new ResizeObserver(() => {
+          const h = rail.clientHeight;
+          if (!h || Math.abs(h - (this.railHeightH || 0)) < 2) return;
+          this.railHeightH = h;
+          this.scheduleRail();
+        });
+        this.railHeightObs.observe(rail);
+      }
+    }
+    const turns = this.railTurns || [];
+    // 窗口尺寸一变，一批能放几格也跟着变；差到两格以上就按新的一批重画（勘 2026-11-25）。
+    if (Math.abs(this.railBatchSize() - (this.railBatch || 0)) >= 2) {
+      this.renderOutline();
+      return;
+    }
+    const turnTicks = [...rail.querySelectorAll(".chat-rail-tick[data-turn]")];
+    if (!turnTicks.length) return;
+    // 翻页格和末端「跳到最新」格没有 top 就会落到静态位置、插到中间去，
+    // 所以整个轨道一起均匀铺开：更早的一批在第一格，「后面的一批」在倒数第二格（勘 2026-11-25 修）。
+    const ticks = [...rail.querySelectorAll(".chat-rail-tick")];
+    const boxRect = box.getBoundingClientRect();
+    const pad = 6;
+    const usable = Math.max(1, rail.clientHeight - pad * 2);
+    const count = ticks.length;
+    const stepRaw = count > 1 ? usable / (count - 1) : 0;
+    if (stepRaw > 0 && stepRaw < 6) {
+      const fit = Math.max(4, Math.floor(usable / 6) - 3);
+      const shrink = this.railShrink;
+      if (!shrink || shrink.h !== rail.clientHeight || shrink.n > fit) {
+        this.railShrink = { h: rail.clientHeight, n: fit };
+        this.renderOutline();
+      }
+      return;
+    }
+    const step = stepRaw;
+    const total = step * Math.max(0, count - 1);
+    const start = pad + Math.max(0, (usable - total) / 2);
+    ticks.forEach((tick, i) => {
+      tick.style.top = Math.round((start + i * step) * 10) / 10 + "px";
+    });
+    const liveBox = box.getBoundingClientRect();
+    const head = liveBox.top + Math.min(120, box.clientHeight * 0.3);
+    let active = -1;
+    turns.forEach((turn, i) => {
+      const node = box.querySelector('.message[data-index="' + turn.from + '"]');
+      if (!node || !node.isConnected) return;
+      const rect = node.getBoundingClientRect();
+      if (!rect.height && !rect.width) return;
+      if (rect.top <= head) active = i;
+    });
+    if (active < 0) return;
+    // 主动翻页后的平滑滚动期间，高亮还在批外（甚至还在末尾）：这段时间不许换批，也不许「滚回最新」。
+    // 否则点一下「更早」立刻被弹回末尾，看着像导航失灵（勘 2026-11-26 修）。
+    const jump = this.railJump;
+    if (jump) {
+      if (Date.now() > jump.until) this.railJump = null;
+      else if (active >= jump.from && active < jump.to) this.railJump = null;
+      else {
+        turnTicks.forEach((tick) => tick.classList.remove("active"));
+        return;
+      }
+    }
+    // 手动翻页后用户又滚回最新那条了：重新跟随最新，新消息进来才知道要往末尾走（勘 2026-11-25 修）
+    if (!this.railPinned && active >= turns.length - 1) {
+      this.railPinned = true;
+      this.railStart = Math.max(0, turns.length - (this.railBatch || 48));
+      this.renderOutline();
+      return;
+    }
+    const first = Number(turnTicks[0].dataset.turn);
+    const last = Number(turnTicks[turnTicks.length - 1].dataset.turn);
+    if (active < first || active > last) {
+      // 手动翻到别的批次时，高亮在批外是正常的：别把批次拽回去，
+      // 等用户点「更新」那一格，或者自己滚回这一批里（勘 2026-11-25）。
+      // 只有真正由滚动引起的越界才把批次拽回来；刚翻完页那一下不算（勘 2026-11-25）。
+      if (this.railFromRender) {
+        turnTicks.forEach((tick) => tick.classList.remove("active"));
+        return;
+      }
+      // 高亮跑出本批：跟着它换批（用户滚到更早/更晚的地方），但不再无条件拽回末尾。
+      // 旧写法一越界就把批次重画到 active 附近，翻页后一滚动就跳走（勘 2026-11-25 修）。
+      const size = this.railBatch || 48;
+      const lo = Math.max(0, active - 2);
+      this.railStart = Math.max(0, Math.min(lo, Math.max(0, turns.length - size)));
+      this.railPinned = this.railStart + size >= turns.length;
+      this.renderOutline();
+      return;
+    }
+    turnTicks.forEach((tick) => tick.classList.toggle("active", Number(tick.dataset.turn) === active));
   }
   async refreshSessionContext() {
     const id = this.state.session;
@@ -1030,6 +1465,7 @@ class ConsoleApp {
     if (!this.state.messages.length) {
       box.innerHTML = `<div class="chat-empty"><span class="brand-mark">${whale}</span><h3>今天想和${e(personaName)}聊点什么？</h3><p>从一句问候开始，或试试「记下这个」。</p></div>`;
       this.ensureChatScroll();
+      this.renderOutline();
       return;
     }
     // 整页重画会换掉 #messages，状态必须存在实例上，不能只读当前这个盒子
@@ -1052,6 +1488,7 @@ class ConsoleApp {
     const stick = opts.anchor === "keep" ? false : pinBottom || prevNearBottom;
     this.setScrollTop(box, stick ? box.scrollHeight : prevTop);
     this.ensureChatScroll();
+    this.renderOutline();
     if (this.pendingRestore) this.restoreChatView(box);
     this.renderUnsentNudges();
   }
@@ -1075,21 +1512,10 @@ class ConsoleApp {
     box.scrollTop = top;
     if (style) style.scrollBehavior = previous;
   }
-  /** 刻度轨与滚动监听只绑一次；页面重绘后元素换了也能重新绑上。 */
+  /** 消息区的滚动、翻页、位置保存只绑一次。刻度轨由 renderOutline 负责。 */
   ensureChatScroll() {
     const box = $("messages");
-    const rail = $("chat-ruler");
     if (!box) return;
-    if (rail && rail.dataset && rail.dataset.bound !== "1") {
-      rail.dataset.bound = "1";
-      rail.addEventListener("click", (event) => {
-        const tick = event.target.closest("[data-tick]");
-        const target = $("messages");
-        if (!tick || !target || !this.rulerStep) return;
-        const index = Number(tick.dataset.tick) || 0;
-        this.setScrollTop(target, index * this.rulerStep, "smooth");
-      });
-    }
     if (box.dataset && box.dataset.scrollBound !== "1") {
       box.dataset.scrollBound = "1";
       // 只有真的动手滚过，才允许触顶自动翻页；否则初次加载就会一直往前翻。
@@ -1103,7 +1529,7 @@ class ConsoleApp {
         "scroll",
         () => {
           if (box !== $("messages")) return;
-          this.updateRuler();
+          this.syncRail();
           // 位置攒一下再写，滚动一次不要连着写几十遍 localStorage
           if (this.viewTimer) clearTimeout(this.viewTimer);
           this.viewTimer = setTimeout(() => this.saveChatView(), 400);
@@ -1113,77 +1539,7 @@ class ConsoleApp {
         { passive: true },
       );
     }
-    // 排版早晚会变（换页、窗口缩放、刷新后第一次排版），插个观察者补一次刻度。
-    if (box.dataset && box.dataset.resizerBound !== "1" && typeof ResizeObserver === "function") {
-      box.dataset.resizerBound = "1";
-      this.rulerObserver?.disconnect?.();
-      this.rulerObserver = new ResizeObserver(() => this.updateRuler());
-      this.rulerObserver.observe(box);
-    }
-    this.updateRuler();
-  }
-  updateRuler() {
-    const rail = $("chat-ruler");
-    const box = $("messages");
-    if (!rail || !box) return;
-    // 轨和消息区必须是两个元素；万一同一个，宁可把轨关掉，也不能擦掉正文。
-    if (rail === box) {
-      rail.hidden = true;
-      this.rulerStep = 0;
-      this.rulerCount = 0;
-      return;
-    }
-    if (!rail.dataset) return;
-    // 量不到高度（藏着的页签、刚换过的元素）就先不动：
-    // 以前这里把 innerHTML 清空，刷新后刻度轨就整条空着，滚动也恢复不回来。
-    const viewport = box.clientHeight || 0;
-    // 刚刷新时消息区还没排版，量到的是 0：过一帧重量，别把轨留成空的。
-    if (!viewport) {
-      if (!this.rulerRetry) {
-        this.rulerRetry = setTimeout(() => {
-          this.rulerRetry = 0;
-          this.updateRuler();
-        }, 60);
-      }
-      return;
-    }
-    const step = Math.max(Math.round(box.clientHeight * 0.9), 140);
-    const scrollable = box.scrollHeight - box.clientHeight;
-    const count =
-      scrollable < step * 0.6
-        ? 0
-        : Math.min(Math.ceil((scrollable + box.clientHeight) / step), 60);
-    if (!count) {
-      rail.hidden = true;
-      rail.innerHTML = "";
-      this.rulerStep = 0;
-      this.rulerCount = 0;
-      return;
-    }
-    // 换了新的轨元素（换会话、刷新后重排版），哪怕尺寸和上次一模一样，
-    // 新元素里也是空的：只比尺寸会整条空着。所以元素变了就必须重画。
-    if (this.rulerRail !== rail || this.rulerStep !== step || this.rulerCount !== count) {
-      this.rulerRail = rail;
-      this.rulerStep = step;
-      this.rulerCount = count;
-      const height = Math.max(box.clientHeight - 12, count * 6);
-      const parts = [];
-      for (let index = 0; index < count; index += 1) {
-        const ratio = count === 1 ? 0 : index / (count - 1);
-        parts.push(
-          `<button type="button" class="tick" data-tick="${index}" style="top:${(ratio * (height - 6)).toFixed(1)}px" aria-label="第 ${index + 1} 屏，共 ${count} 屏"></button>`,
-        );
-      }
-      rail.innerHTML = parts.join("");
-    }
-    rail.hidden = false;
-    const active = Math.max(
-      0,
-      Math.min(count - 1, Math.round(box.scrollTop / step)),
-    );
-    rail
-      .querySelectorAll(".tick")
-      .forEach((tick, index) => tick.classList.toggle("active", index === active));
+    this.syncRail();
   }
   /** 滚到顶部时往前翻一页，翻完把阅读位置原样托住。 */
   async loadOlder() {
@@ -1207,7 +1563,13 @@ class ConsoleApp {
         hasMore: page.hasMore,
       };
       const rows = messageRows(page.items, page.positions);
-      if (!rows.length) return;
+      // 只有拉到顶（start 0）才敢说「前面没有更早的了」，这时已加载的轮序就是全会话轮序。
+      // 中间那几页只攒了个半截数，不能拿去显示成绝对轮号，宁可继续标「已加载」。（勘 2026-11-26 修）
+      this.railPrefix = page.start === 0 ? 0 : undefined;
+      if (!rows.length) {
+        this.renderOutline();
+        return;
+      }
       this.state.messages = rows.concat(this.state.messages);
       this.renderMessages({ anchor: "keep" });
       this.setScrollTop(box, box.scrollHeight - prevHeight + prevTop);
@@ -1230,7 +1592,7 @@ class ConsoleApp {
     bubble.innerHTML = renderRich(this.reply.text);
     box.querySelector('.message[data-thinking="1"]')?.remove();
     if (nearBottom) box.scrollTop = box.scrollHeight;
-    this.updateRuler();
+    this.syncRail();
   }
   /** 被拒且没处放的补充排在这里：能重发，也能显式丢掉。不碰输入框里正在写的草稿。 */
   renderUnsentNudges() {
@@ -1305,19 +1667,46 @@ class ConsoleApp {
 const thinkingFaces = ["(｡•ᴗ•｡)","(´｡• ᵕ •｡`)","(๑•̀ㅂ•́)و","(￣▽￣)","(＝ω＝)","(っ˘ω˘ς)","(๑´ω`๑)","(・ω・)","(๑•́ ₃ •̀๑)","( ˘ω˘ )","(´▽`)","(･ω･)ﾉ"];
 const pickThinkingFace = () => thinkingFaces[Math.floor(Math.random() * thinkingFaces.length)];
 
+// 程序滚动的保护窗口。到期不等于滚动结束，只为没有 scrollend 的环境兜底（勘 2026-11-26）。
+const RAIL_JUMP_MS = 8000;
 const SESSION_PAGE = 40;
 
 /** 会话行 → 气泡数组；首屏与续页共用一份映射。 */
+/** 截短，超了就加省略号。（勘 2026-11-26 补：这一版漏了这个依赖，作者报 clip is not defined） */
+function clip(text, max) {
+  const flat = String(text || "").trim();
+  return flat.length > max ? flat.slice(0, max) + "…" : flat;
+}
+
+/** 服务端落库的中途补充行带 external_message_id，值是前端发的 nudge_ 开头的消息 ID。
+    刷新后 nudge 标记没了，靠它才认得出来（勘 2026-11-26）。
+    两道一起看：渠道必须是 web，形状必须是我们自己生成的那种。
+    只按前缀猜会撞车——别的渠道的入站消息 ID 由平台给（QQ 是纯数字号，
+    契约也允许 nudge_qq123 这种），撞上就把一条独立的新问并进上一轮了。 */
+const NUDGE_ID = /^nudge_[a-z0-9]{12,32}$/;
+function isNudgeRow(row) {
+  if (row?.originChannel !== "web") return false;
+  return typeof row.external_message_id === "string" && NUDGE_ID.test(row.external_message_id);
+}
 function messageRows(rows, positions) {
   return rows
     .filter((row) => row.type === "message")
-    .map((row, index) => ({
-      id: row.id || (positions ? "historical-line:" + positions[index] : undefined),
-      role: row.role,
-      text: row.text,
-      protocolOriginal: row.tool_protocol_original,
-      personaName: row.persona_name,
-    }));
+    .map((row, index) => {
+      const originChannel = row.origin?.channel;
+      const channel = row.channel;
+      // 渠道记录冲突时保留独立的导航入口，避免把普通消息当作补充。
+      const conflictingChannels = originChannel != null && channel != null && originChannel !== channel;
+      return {
+        id: row.id || (positions ? "historical-line:" + positions[index] : undefined),
+        role: row.role,
+        text: row.text,
+        protocolOriginal: row.tool_protocol_original,
+        personaName: row.persona_name,
+        originChannel: conflictingChannels ? undefined : originChannel ?? channel,
+        ...(typeof row.external_message_id === "string" ? { external_message_id: row.external_message_id } : {}),
+      };
+    });
+
 }
 
 const app = new ConsoleApp();

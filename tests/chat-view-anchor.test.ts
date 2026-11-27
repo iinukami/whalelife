@@ -1,4 +1,4 @@
-// #14 第 1、2 条回归：刻度换容器要重建、阅读位置按消息 id 恢复。
+// #14 第 2 条回归：阅读位置按消息 id 存、按 id 恢复，不跟序号漂。
 // app.js 是自执行的控制台脚本，这里用 vm 跑它的源码，把类截出来喂假 DOM。
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -138,7 +138,7 @@ function makeApp(elements: Record<string, FakeNode>) {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  // 空桩：任何属性都是返回空串的函数，够 updateRuler / 恢复位置用
+  // 空桩：任何属性都是返回空串的函数，够恢复位置用
   sandbox.__stubBag = new Proxy(
     {},
     {
@@ -153,34 +153,6 @@ function makeApp(elements: Record<string, FakeNode>) {
   return instance;
 }
 
-
-test("同一个刻度轨重复量，刻度不该被清空", () => {
-  const rail = new FakeNode({ dataset: {} });
-  const box = new FakeNode({ dataset: {}, clientHeight: 435, scrollHeight: 4000 });
-  const app = makeApp({ "chat-ruler": rail, messages: box });
-  app.updateRuler();
-  assert.ok(rail.innerHTML.includes("data-tick"), "第一次该画出刻度");
-  app.updateRuler();
-  assert.ok(rail.innerHTML.includes("data-tick"), "第二次不该清空");
-  assert.equal(rail.hidden, false);
-});
-
-test("换成新轨元素、尺寸完全一样，也要重新画出刻度", () => {
-  // 刷新/重排版后拿到的是新元素：只比尺寸会判成「没变」，新元素里就一直是空的
-  const railA = new FakeNode({ dataset: {} });
-  const box = new FakeNode({ dataset: {}, clientHeight: 435, scrollHeight: 4000 });
-  const first = makeApp({ "chat-ruler": railA, messages: box });
-  first.updateRuler();
-  const { rulerStep, rulerCount } = first;
-
-  const railB = new FakeNode({ dataset: {} });
-  const second = makeApp({ "chat-ruler": railB, messages: box });
-  second.rulerStep = rulerStep; // 内存里记着旧容器算出来的尺子
-  second.rulerCount = rulerCount;
-  second.rulerRail = railA; // 记的是旧元素
-  second.updateRuler();
-  assert.ok(railB.innerHTML.includes("data-tick"), "新轨里必须重新画出刻度");
-});
 
 test("记阅读位置时存的是消息 id，不是序号", () => {
   const nodes = [
