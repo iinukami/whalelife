@@ -2497,59 +2497,123 @@ dialog::backdrop {
   flex: 1;
   min-width: 0;
 }
-.chat-ruler {
+/* 轨道宽度跟窗口走：窄屏收窄让位给正文，宽屏放宽好点（勘 2026-11-25）。
+   --rail-w 是唯一变量，刻度和翻页格都按百分比取，改它一处就整体缩放。 */
+.chat-rail {
+  --rail-w: clamp(12px, 1.5vw, 26px);
   position: relative;
-  flex: 0 0 18px;
-  width: 18px;
-  margin: 22px 0 22px 6px;
+  flex: 0 0 var(--rail-w);
+  width: var(--rail-w);
+  margin: 10px 0 12px 4px;
+  overflow: hidden;
+  transition: flex-basis 0.22s ease, width 0.22s ease;
 }
-.chat-ruler[hidden] {
+.chat-rail[hidden] {
   display: none;
 }
-.chat-ruler::before {
-  content: "";
-  position: absolute;
-  left: 8px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--line);
+
+/* 换批（窗口高度变了、一批装不下）时整轨要重画，新节点没有过渡起点；
+   硬切看着像闪一下，给它一个短淡入（勘 2026-11-25）。 */
+.chat-rail.rail-swap .chat-rail-tick {
+  animation: rail-tick-in 0.18s ease-out both;
 }
-.chat-ruler .tick {
+@keyframes rail-tick-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-rail,
+  .chat-rail .chat-rail-tick,
+  .chat-rail .chat-rail-tick i {
+    transition: none;
+  }
+  .chat-rail.rail-swap .chat-rail-tick {
+    animation: none;
+  }
+}
+.chat-rail .chat-rail-tick {
   position: absolute;
+  transition: top 0.22s ease, width 0.22s ease;
   left: 0;
-  width: 18px;
-  height: 6px;
+  width: var(--rail-w);
+  height: 10px;
   padding: 0;
   border: 0;
   background: transparent;
   cursor: pointer;
 }
-.chat-ruler .tick::after {
-  content: "";
+.chat-rail .chat-rail-tick i {
   display: block;
-  width: 9px;
+  width: 50%;
   height: 2px;
-  margin: 2px auto;
+  margin: 4px auto;
   border-radius: 2px;
   background: #cfccdb;
-  transition: width 0.15s ease, background 0.15s ease;
+  transition: width 0.15s ease, background 0.15s ease, opacity 0.15s ease;
 }
-.chat-ruler .tick:hover::after {
-  width: 13px;
+.chat-rail .chat-rail-tick:hover i {
+  width: 72%;
   background: var(--muted);
 }
-.chat-ruler .tick.active::after {
-  width: 14px;
+.chat-rail .chat-rail-tick.active i {
+  width: 78%;
   background: var(--accent);
 }
-.chat-ruler .tick:focus-visible {
+.chat-rail .chat-rail-tick:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
   border-radius: 4px;
 }
+/* 首尾的翻页格：比普通刻度更细更浅，点一下换一批（勘 2026-11-25） */
+.chat-rail .chat-rail-tick.chat-rail-page i {
+  width: 33%;
+  height: 1px;
+  margin: 4.5px auto;
+  background: var(--muted);
+  opacity: 0.45;
+}
+.chat-rail .chat-rail-tick.chat-rail-page:hover i {
+  width: 78%;
+  opacity: 1;
+}
+/* 倒数第一格固定是「最新的一轮」：实心加粗，和「后面的一批」区分开（勘 2026-11-25） */
+.chat-rail .chat-rail-tick.chat-rail-page.chat-rail-latest i {
+  width: 44%;
+  height: 2px;
+  opacity: 0.85;
+}
+
+.chat-rail-card {
+  position: fixed;
+  z-index: 60;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 30px rgba(20, 22, 30, 0.12);
+  font-size: 12px;
+  line-height: 1.6;
+  color: #2c2f33;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chat-rail-card[hidden] {
+  display: none;
+}
+.chat-rail-card b {
+  font-size: 12.5px;
+}
+.chat-rail-card span {
+  color: #6b7280;
+}
+.chat-rail-card .chat-rail-card-meta {
+  color: var(--accent);
+  font-size: 11px;
+}
 @media (max-width: 640px) {
-  .chat-ruler {
+  .chat-rail {
     display: none;
   }
 }
