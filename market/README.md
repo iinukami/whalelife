@@ -23,6 +23,7 @@
 
 | 插件 | 收录版本 | 作者 | 用途 | 必需插件 | 相关链接 |
 | --- | --- | --- | --- | --- | --- |
+| 搜索引擎 | v0.4.3 | SSSSmallSlimeSmile | 聚合公开网页搜索，支持翻页、正文阅读和学术检索。可配置搜索来源，来源域名须能解析到公网地址。 | — | [安装说明](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/blob/v0.4.3/README.md>) · [原仓库 · 加星](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine>) · [反馈](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/issues>) |
 | 看屏 | v0.1.7 | SSSSmallSlimeSmile | 按画面变化取帧，汇总所选时段的屏幕变化，需要 Windows、Python 3、Pillow 和 NumPy。 | — | [安装说明](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-peek/blob/aded329b7d6f28c5c753e0ac138bec627f2b7043/README.md>) · [原仓库 · 加星](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-peek>) · [反馈](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-peek/issues>) |
 | 账本 | v0.2.3 | SSSSmallSlimeSmile | 按天统计模型请求用量，并与宿主账本只读对账。 | — | [安装说明](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-ledger/blob/8ea562a7a5a4639ab2dab29dfe983af2adffeaff/README.md>) · [原仓库 · 加星](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-ledger>) · [反馈](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-ledger/issues>) |
 | 提示音 | v0.3.0 | SSSSmallSlimeSmile | 回复写入记录后在本机播放提示音，可按回合时长和渠道筛选。 | — | [安装说明](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-chime/blob/8edb052191e00831b72700e9bb59f7746e19d0d3/README.md#%E6%80%8E%E4%B9%88%E8%A3%85>) · [原仓库 · 加星](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-chime>) · [反馈](<https://github.com/SSSSmallSlimeSmile/whalelife-plugin-chime/issues>) |
