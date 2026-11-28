@@ -6,10 +6,12 @@ import { api, escapeHTML as e } from "./api.js";
 import { icon, whale } from "./icons.js";
 
 const endpoint = "/api/host-update";
+const releasesLink = '<a class="host-release-link" href="https://github.com/iinukami/whalelife/releases" target="_blank" rel="noopener noreferrer">GitHub 正式发行版</a>';
 const versionLabel = value => /^\d/.test(value) ? "v" + value : value;
 const active = data => data?.phase === "preparing" || data?.phase === "restarting";
 const attemptKey = "whalelife.hostUpdateAttempt";
 const waitLimit = 180_000;
+const successDisplayMs = 5_000;
 const outcomes = { updated: "success", "rolled-back": "restored", failed: "failed" };
 const pending = ui => Boolean(ui?.attempt && !ui.result && ui.phase !== "unknown");
 const notes = {
@@ -76,10 +78,21 @@ function actions(ui) {
   const latest = data?.latest;
   const error = ui.error || data?.error;
   const available = Boolean(latest?.version && data?.supported && !error);
-  const release = latest && !error ? releaseLink(latest.url) : "";
+  let release = latest && !error ? releaseLink(latest.url) : "";
+  if (!release && data?.lastResult && (data.checked || error)) release = releasesLink;
   const open = available
     ? `<button type="button" class="btn small primary" data-host-action="open"${ui.reading ? " disabled" : ""}>查看更新</button>` : "";
   return release + open + `<button type="button" class="btn small" data-host-action="check"${ui.reading ? " disabled" : ""}>${ui.checking ? "检查中…" : "检查更新"}</button>`;
+}
+
+function updateLog(seen, result, extra) {
+  const records = seen.map(key => notes[key]);
+  if (result) {
+    const label = { updated: "更新成功", "rolled-back": "更新失败，已回滚", failed: "更新失败" }[result.status];
+    records.push(`${label}（目标 ${versionLabel(result.version)}）。${result.message || ""}`);
+  }
+  if (extra) records.push(extra);
+  return `<ol class="wl-log">${records.map(line => "<li>" + e(line) + "</li>").join("")}</ol>`;
 }
 
 function updateCard(ui, phase, result) {
@@ -117,13 +130,14 @@ function updateCard(ui, phase, result) {
   const versions = attempt?.from && attempt.to
     ? `<span>${e(versionLabel(attempt.from))}</span><span aria-label="更新到">→</span><b>${e(versionLabel(attempt.to))}</b>`
     : `<span>当前 ${e(current)}</span>`;
-  const records = seen.map(key => notes[key]);
-  if (result) {
-    const label = { updated:"更新成功", "rolled-back":"更新失败，已回滚", failed:"更新失败" }[result.status];
-    records.push(`${label}（目标 ${versionLabel(result.version)}）。${result.message || ""}`);
-  }
-  if (phase === "unknown") records.push(descriptions.unknown);
+  const records = updateLog(seen, result, phase === "unknown" ? descriptions.unknown : "");
   let controls = result ? actions(ui) : "";
+  const checkError = ui.error || data?.error;
+  if (result && checkError) controls = `<small class="host-update-result warning">${e(checkError)}</small>` + controls;
+  else if (result && data?.checked) {
+    const releaseStatus = data.latest ? `可更新至 ${versionLabel(data.latest.version)}` : "暂无更高的正式版本";
+    controls = `<small>${e(releaseStatus)}</small>` + controls;
+  }
   if (phase === "timeout") controls = `<button type="button" class="btn small" data-host-action="reconnect"${ui.reading ? " disabled" : ""}>重新连接</button>`;
   if (phase === "unknown") controls = '<button type="button" class="btn small" data-host-action="check">检查更新</button>';
   return `<div class="wl-card" data-phase="${phase}" data-tone="${tone}">
@@ -131,7 +145,7 @@ function updateCard(ui, phase, result) {
     <div class="wl-hero"><div class="wl-copy" role="status" aria-atomic="true"><h2>${e(headings[phase])}</h2><p>${e(descriptions[phase])}</p></div>
     <div class="wl-signal" aria-hidden="true"><span class="wl-node wl-console">${icon("terminal")}</span><span class="wl-wire"><span class="wl-packet"></span></span><span class="wl-node wl-host">${icon("database")}</span></div></div>
     <ol class="wl-track" aria-label="本次更新的阶段">${steps}</ol>
-    <div class="wl-foot"><details><summary><span class="wl-caret" aria-hidden="true">›</span>更新记录</summary><ol class="wl-log">${records.map(line => "<li>" + e(line) + "</li>").join("")}</ol></details><div class="host-update-actions">${controls}</div></div></div>`;
+    <div class="wl-foot"><details><summary><span class="wl-caret" aria-hidden="true">›</span>更新记录</summary>${records}</details><div class="host-update-actions">${controls}</div></div></div>`;
 }
 
 export function hostUpdateContent(app) {
@@ -141,16 +155,16 @@ export function hostUpdateContent(app) {
   const current = data?.current ? "当前版本 " + versionLabel(data.current) : "";
   const error = ui.error || data?.error;
   const available = Boolean(latest?.version && data?.supported && !error);
-  if (ui.attempt) return updateCard(ui, ui.phase, ui.result);
+  if (ui.attempt && ui.phase !== "summary") return updateCard(ui, ui.phase, ui.result);
   const last = data?.lastResult;
-  if (!data?.checked && !latest && !error && Object.hasOwn(outcomes, last?.status) &&
-      (last.status !== "updated" || last.version === data.current))
+  if (last?.status === "failed" || last?.status === "rolled-back")
     return updateCard(ui, outcomes[last.status], last);
   let title = "WhaleLife 本体", status = "";
   if (latest?.version && !error) {
     title = "WhaleLife " + versionLabel(latest.version) + " 可更新";
   } else if (data?.supported && !error && data.phase === "idle") {
-    status = data.checked ? "暂无更高的正式版本" : "尚未检查更新";
+    if (data.checked) status = "暂无更高的正式版本";
+    else if (!last) status = "尚未检查更新";
   }
   if (data?.supported === false && !error) {
     status = "当前安装方式不支持一键更新";
@@ -159,11 +173,15 @@ export function hostUpdateContent(app) {
     status = "上次成功检查 " + new Date(data.lastCheckedAt).toLocaleString("zh-CN", { hour12: false });
   }
   const info = [current, status].filter(Boolean).join(" · ");
-  const resultLabel = { updated: "更新成功", "rolled-back": "更新失败，已回滚", failed: "更新失败" }[last?.status];
-  const result = resultLabel
-    ? `<p class="host-update-result ${last.status === "updated" ? "ok" : "warning"}">上次更新 · ${e(resultLabel)}${last.version ? "（目标 " + e(versionLabel(last.version)) + "）" : ""}${last.message ? "。" + e(last.message) : ""}</p>` : "";
+  if (last?.status === "updated") {
+    return `<div class="host-update-summary"><details><summary>
+      <span class="host-update-icon">${icon("check")}</span><span class="host-update-copy" role="status"><strong>${e(title)}</strong><small>${e(info)}</small></span>
+      <span class="host-update-history-link"><span class="wl-caret" aria-hidden="true">›</span> 更新记录</span></summary>
+      ${updateLog(ui.attempt?.seen ?? [], last)}</details><div class="host-update-actions">${actions(ui)}</div>
+      ${error ? `<p class="host-update-result warning" role="status">${e(error)}</p>` : ""}</div>`;
+  }
   return `<div class="host-update-line"><span class="host-update-icon${available ? " available" : ""}">${icon("download")}</span>
-    <div class="host-update-copy" role="status"><strong>${e(title)}</strong><small>${info ? e(info) + " · " : ""}<a class="host-release-link" href="https://github.com/iinukami/whalelife/releases" target="_blank" rel="noopener noreferrer">GitHub 正式发行版</a></small>${result}
+    <div class="host-update-copy" role="status"><strong>${e(title)}</strong><small>${info ? e(info) + " · " : ""}${releasesLink}</small>
     ${error ? `<p class="host-update-result warning">${e(error)}</p>` : ""}</div>
     <div class="host-update-actions">${actions(ui)}</div></div>`;
 }
@@ -230,6 +248,12 @@ function acceptStatus(app, data) {
       ui.result = data.lastResult;
       ui.phase = outcomes[ui.result.status];
       storeAttempt(ui);
+      if (ui.phase === "success") {
+        ui.deadline = setTimeout(() => {
+          ui.phase = "summary";
+          paint(app);
+        }, successDisplayMs);
+      }
     } else if (ui.phase === "retrying" && data.phase === "idle") {
       // An apply request can be lost before reaching the server. End the wait
       // only after a manual reconnect confirms that the service is idle.
@@ -244,6 +268,7 @@ async function read(app, checkRelease = false) {
   if (ui.reading || ui.submitting || !app.authenticated) return;
   if (checkRelease && pending(ui)) return;
   if (checkRelease) {
+    clearTimeout(ui.deadline);
     ui.attempt = undefined;
     ui.result = undefined;
   }

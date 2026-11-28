@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate as turn } from "node:timers/promises";
 
@@ -33,6 +33,27 @@ function overview() {
     },
     confirm: async () => { assert.ok(confirm); await confirm(); },
   };
+}
+
+function mockSessionStorage(t: TestContext) {
+  const entries = new Map<string, string>();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { sessionStorage: {
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => entries.set(key, value),
+    removeItem: (key: string) => entries.delete(key),
+  } } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "window", previous);
+    else Reflect.deleteProperty(globalThis, "window");
+  });
+}
+
+function assertCompactSuccess(html: string) {
+  assert.doesNotMatch(html, /class="wl-track"|<details\b[^>]*\bopen\b/);
+  assert.match(html, /v0\.1\.1/);
+  assert.match(html, /<summary\b[^>]*>[\s\S]*?更新记录[\s\S]*?<\/summary>[\s\S]*?已切换版本[\s\S]*?<\/details>/);
+  assert.match(html, /data-host-action="check"/);
 }
 
 test("a console read or cancelled dialog cannot apply an update; confirming pins the shown version", async t => {
@@ -85,6 +106,9 @@ test("an interrupted apply waits for server status and 401 requires login; rollb
   await turn();
   assert.match(view.slot.innerHTML, /更新失败，已回滚/);
   assert.match(view.slot.innerHTML, /已恢复 0\.1\.0/);
+  t.mock.timers.tick(60_000);
+  assert.match(view.slot.innerHTML, /data-phase="restored"/);
+  assert.match(view.slot.innerHTML, /data-host-action="open"/);
   assert.equal(applies, 1);
 });
 
@@ -108,6 +132,7 @@ test("offline checks can be retried, and only the host's returned outcome is sho
   assert.equal(paths[1], "/api/host-update/check");
   assert.match(view.slot.innerHTML, /更新成功/);
   assert.match(view.slot.innerHTML, /当前版本 v0\.1\.1 · 暂无更高的正式版本/);
+  assert.match(view.slot.innerHTML, /GitHub 正式发行版/);
   assert.doesNotMatch(hostUpdateContent({ hostUpdate: { data: { ...ready, supported: false } } }), /data-host-action="open"/);
   const failedCheck = hostUpdateContent({ hostUpdate: { data: {
     ...ready, latest: null, checked: false, error: "无法读取更新清单", lastCheckedAt: "2026-11-21T10:20:30.000Z",
@@ -115,6 +140,12 @@ test("offline checks can be retried, and only the host's returned outcome is sho
   assert.match(failedCheck, /上次成功检查/);
   assert.match(failedCheck, /无法读取更新清单/);
   assert.doesNotMatch(failedCheck, /暂无更高的正式版本|data-host-action="open"/);
+  for (const status of ["updated", "failed", "rolled-back"]) {
+    const html = hostUpdateContent({ hostUpdate: { data: { ...ready, latest: null, checked: false,
+      error: "无法读取更新清单", lastResult: { status, version: ready.current, message: "上次结果" } } } });
+    assert.match(html, /无法读取更新清单/);
+    assert.match(html, /GitHub 正式发行版/);
+  }
 });
 
 test("opening and idling on the overview only read local status; a click checks GitHub", async t => {
@@ -182,6 +213,7 @@ test("a three-minute disconnect preserves the last confirmed stage and reconnect
   t.mock.timers.tick(60_000);
   await turn();
   assert.equal(paths.length, countAtTimeout);
+  assert.match(view.slot.innerHTML, /data-phase="timeout"/);
   offline = false;
   recovered = true;
   view.click("reconnect");
@@ -191,6 +223,44 @@ test("a three-minute disconnect preserves the last confirmed stage and reconnect
   assert.equal(paths.filter(p => p.endsWith("/apply")).length, 1);
   assert.match(view.slot.innerHTML, /data-phase="success"/);
   assert.match(view.slot.innerHTML, /已更新到 v0\.1\.1/);
+  t.mock.timers.tick(4_999);
+  assert.match(view.slot.innerHTML, /data-phase="success"/);
+  t.mock.timers.tick(1);
+  assertCompactSuccess(view.slot.innerHTML);
+  assert.match(view.slot.innerHTML, /控制台暂时与服务断开/);
+  assert.deepEqual(paths.slice(countAtTimeout), ["/api/host-update"]);
+});
+
+test("refreshing during the success message shows compact history immediately and only reads local status", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  mockSessionStorage(t);
+  const view = overview();
+  const paths: string[] = [];
+  let runningVersionChanged = false;
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    paths.push(path);
+    if (path.endsWith("/apply")) return Response.json({ ...ready, phase: "restarting" });
+    return Response.json(runningVersionChanged
+      ? { ...ready, current: "0.1.1", latest: null, checked: false,
+          lastResult: { status: "updated", version: "0.1.1", message: "已切换版本" } }
+      : ready);
+  });
+  t.after(() => resetHostUpdateSession(view.app));
+  bindHostUpdate(view.app);
+  await turn();
+  view.click("open");
+  await view.confirm();
+  runningVersionChanged = true;
+  t.mock.timers.tick(2000);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="success"/);
+  resetHostUpdateSession(view.app);
+  bindHostUpdate(view.app);
+  await turn();
+  assertCompactSuccess(view.slot.innerHTML);
+  t.mock.timers.tick(10_000);
+  assertCompactSuccess(view.slot.innerHTML);
+  assert.deepEqual(paths, ["/api/host-update", "/api/host-update/apply", "/api/host-update", "/api/host-update"]);
 });
 
 test("the previous rollback of the same target cannot finish a retry and a preparation failure is never a rollback", async t => {
@@ -218,20 +288,18 @@ test("the previous rollback of the same target cannot finish a retry and a prepa
   assert.match(view.slot.innerHTML, /data-phase="failed"/);
   assert.match(view.slot.innerHTML, /安装包 SHA-256 校验失败/);
   assert.doesNotMatch(view.slot.innerHTML, /data-phase="restored"/);
+  t.mock.timers.tick(60_000);
+  assert.match(view.slot.innerHTML, /data-phase="failed"/);
+  resetHostUpdateSession(view.app);
+  bindHostUpdate(view.app);
+  await turn();
+  assert.match(view.slot.innerHTML, /data-phase="failed"/);
+  assert.match(view.slot.innerHTML, /安装包 SHA-256 校验失败/);
+  assert.match(view.slot.innerHTML, /data-host-action="open"/);
 });
 
 test("a rejected apply does not leave the relogged console waiting for an update that never started", async t => {
-  const entries = new Map<string, string>();
-  const previous = Object.getOwnPropertyDescriptor(globalThis, "window");
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { sessionStorage: {
-    getItem: (key: string) => entries.get(key) ?? null,
-    setItem: (key: string, value: string) => entries.set(key, value),
-    removeItem: (key: string) => entries.delete(key),
-  } } });
-  t.after(() => {
-    if (previous) Object.defineProperty(globalThis, "window", previous);
-    else Reflect.deleteProperty(globalThis, "window");
-  });
+  mockSessionStorage(t);
   const view = overview();
   t.after(() => resetHostUpdateSession(view.app));
   t.mock.method(globalThis, "fetch", async (path: string) => path.endsWith("/apply")

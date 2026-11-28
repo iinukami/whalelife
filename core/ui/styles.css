@@ -610,6 +610,28 @@ main {
 .host-update-result.ok { color: #287c60; }
 .host-update-result.warning { color: #916118; }
 .host-update-actions { flex: none; }
+.host-update-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 16px;
+}
+.host-update-summary summary {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  gap: 12px;
+  list-style: none;
+  cursor: pointer;
+}
+.host-update-summary summary::-webkit-details-marker { display: none; }
+.host-update-summary summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.host-update-summary .host-update-icon { color: var(--green); }
+.host-update-history-link { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.host-update-summary summary:hover .host-update-history-link { color: var(--accent); }
+.host-update .host-update-summary .wl-log { margin: 8px 0 4px; color: var(--muted); }
+.host-update-summary .host-update-actions { align-self: start; min-height: 36px; }
+.host-update-summary > p { grid-column: 1 / -1; }
 .host-release-link { color: var(--accent); font-size: 12px; }
 .host-confirm-note { margin-top: 12px; color: var(--muted); }
 @media (max-width: 640px) {
@@ -618,6 +640,11 @@ main {
   .host-update-copy small { display: block; margin-inline-start: 0; }
   .host-update-actions { flex-wrap: wrap; gap: 6px; }
   .host-update-actions:has(.host-release-link) { width: 100%; justify-content: flex-end; }
+  .host-update-summary { column-gap: 8px; }
+  .host-update-summary summary { gap: 6px; }
+  .host-update-summary .host-update-icon { display: none; }
+  .host-update-summary:not(:has([data-host-action="open"])) .host-update-copy strong { display: none; }
+  .host-update-summary:has(.host-release-link) { grid-template-columns: 1fr; }
 }
 .host-update:has(> .wl-card) {
   container-type: inline-size;
