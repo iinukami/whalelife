@@ -74,4 +74,4 @@ export function summaryTime(value: any, zone: string) {
   const range = value?.time_range;
   return range?.start && range?.end ? `资料记录时间：${timeLabel(range.start, zone)} 至 ${timeLabel(range.end, zone)}${range.incomplete ? "（部分时间缺失）" : ""}` : "资料时间未记录";
 }
-export const TIME_GUIDANCE = "记录时间不等于事情发生时间；今天、昨天、明天以对应消息时间和原时区为依据。摘要保留关键事件的明确日期，不把旧相对日期套到当前日期；时间或原时区缺失、异常或有歧义时保留不确定性，不猜日期。";
+export const TIME_GUIDANCE = "记录时间不等于事情发生时间；历史消息中的今天、昨天、明天、刚才以对应消息日期和原时区为依据，后来的回顾不改变原事件日期。引用旧事前核对原消息日期；内容相似不代表事情最近又发生，旧活动、计划或临时状态也不默认延续到今天，以最新发言为准。摘要保留关键事件的明确日期，不把旧相对日期套到当前日期；时间或原时区缺失、异常或有歧义时保留不确定性，不猜日期。日常聊天沿用当前人格自然表达，无需主动报日期或解释核对过程；只有用户询问或确实影响回答时才说明。";
