@@ -156,7 +156,9 @@
           "sizeBytes": 70971,
           "sha256": "a7dbbe859a38d42d5c69b06f4d11187dcb57af60a1e268f74f881f1f0e63019e",
           "dependencies": {},
-          "bundledPluginIds": ["schedule/weather"]
+          "bundledPluginIds": [
+            "schedule/weather"
+          ]
         }
       ]
     },
@@ -210,7 +212,10 @@
           "sizeBytes": 72070,
           "sha256": "1614142302ac180d767b6d9959447ec6c7b139e3a62b5d8b6ac2e0d815e5379d",
           "dependencies": {},
-          "bundledPluginIds": ["voice/sing", "voice/speak"]
+          "bundledPluginIds": [
+            "voice/sing",
+            "voice/speak"
+          ]
         }
       ]
     },
@@ -268,7 +273,11 @@
           "sizeBytes": 141194,
           "sha256": "3c828e541ecdd8f168545cccfed2a6c3872dce67fa4f4ceb05be02eaa41d5fb6",
           "dependencies": {},
-          "bundledPluginIds": ["studio/image", "studio/promptkit", "studio/video"]
+          "bundledPluginIds": [
+            "studio/image",
+            "studio/promptkit",
+            "studio/video"
+          ]
         },
         {
           "version": "0.2.2",
@@ -279,7 +288,11 @@
           "sizeBytes": 120344,
           "sha256": "c6e37794d7fe77617ca4344e8d6a9a11c2b9c73fcb5164044b0e51abb0871767",
           "dependencies": {},
-          "bundledPluginIds": ["studio/image", "studio/promptkit", "studio/video"]
+          "bundledPluginIds": [
+            "studio/image",
+            "studio/promptkit",
+            "studio/video"
+          ]
         }
       ]
     },
@@ -522,6 +535,31 @@
           "assetUrl": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-peek/releases/download/v0.1.7/peek-0.1.7.wlpkg.gz",
           "sizeBytes": 89463,
           "sha256": "a4c167813e076ada5b9dcb53041a4803d5453bbca2020f38a2d49eb97ba0b494",
+          "dependencies": {}
+        }
+      ]
+    },
+    {
+      "id": "search-engine",
+      "name": "搜索引擎",
+      "version": "0.4.3",
+      "author": "SSSSmallSlimeSmile",
+      "description": "聚合公开网页搜索，支持翻页、正文阅读和学术检索。可配置搜索来源，来源域名须能解析到公网地址。",
+      "repository": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine",
+      "installation": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/blob/v0.4.3/README.md",
+      "feedback": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/issues",
+      "dependencies": [],
+      "collected": "2026-11-28",
+      "stars": 0,
+      "verifiedReleases": [
+        {
+          "version": "0.4.3",
+          "hostRange": "0.1.6",
+          "platform": "win32",
+          "arch": "x64",
+          "assetUrl": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/releases/download/v0.4.3/search-engine-0.4.3.wlpkg.gz",
+          "sizeBytes": 1695575,
+          "sha256": "5ee6b5e2f70b603330fd400391ebe0f1428f2ebe333cd35a0e2a3cb0ae471412",
           "dependencies": {}
         }
       ]

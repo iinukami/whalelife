@@ -543,6 +543,31 @@ window.WHALELIFE_CATALOG = {
           "dependencies": {}
         }
       ]
+    },
+    {
+      "id": "search-engine",
+      "name": "搜索引擎",
+      "version": "0.4.3",
+      "author": "SSSSmallSlimeSmile",
+      "description": "聚合公开网页搜索，支持翻页、正文阅读和学术检索。可配置搜索来源，来源域名须能解析到公网地址。",
+      "repository": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine",
+      "installation": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/blob/v0.4.3/README.md",
+      "feedback": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/issues",
+      "dependencies": [],
+      "collected": "2026-11-28",
+      "stars": 0,
+      "verifiedReleases": [
+        {
+          "version": "0.4.3",
+          "hostRange": "0.1.6",
+          "platform": "win32",
+          "arch": "x64",
+          "assetUrl": "https://github.com/SSSSmallSlimeSmile/whalelife-plugin-search-engine/releases/download/v0.4.3/search-engine-0.4.3.wlpkg.gz",
+          "sizeBytes": 1695575,
+          "sha256": "5ee6b5e2f70b603330fd400391ebe0f1428f2ebe333cd35a0e2a3cb0ae471412",
+          "dependencies": {}
+        }
+      ]
     }
   ]
 };
