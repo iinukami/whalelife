@@ -83,7 +83,7 @@
     },
     {
       "id": "computer",
-      "version": "0.1.2",
+      "version": "0.4.0",
       "name": "电脑与文件",
       "author": "iinukami 和贡献者",
       "description": "按授权查找和编辑 Windows 本地文件、生成文档，在隔离环境中运行离线脚本。",
